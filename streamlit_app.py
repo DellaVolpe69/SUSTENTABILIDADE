@@ -198,9 +198,9 @@ user_email = (
     or "desconhecido"
 )
 
-# Validação de domínio do e-mail
-if not isinstance(user_email, str) or not user_email.strip().lower() not in USUARIOS_AUTORIZADOS:
-    st.error("Acesso restrito a usuários @dellavolpe.com.br. Não foi possível validar seu e-mail.")
+# Validação de acesso — apenas e-mails explicitamente autorizados
+if not isinstance(user_email, str) or user_email.strip().lower() not in USUARIOS_AUTORIZADOS:
+    st.error("Acesso não autorizado. Entre em contato com o administrador do painel.")
     st.stop()
 
 # Salva no session_state
