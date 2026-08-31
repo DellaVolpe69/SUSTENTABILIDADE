@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-# import supabase
+import supabase
 import sys
 import subprocess
 from pathlib import Path, PureWindowsPath
