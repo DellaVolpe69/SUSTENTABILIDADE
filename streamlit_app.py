@@ -14,12 +14,12 @@ from requests_oauthlib import OAuth2Session
 import requests
 
 # Configuração da página — DEVE ser a primeira chamada Streamlit
-st.set_page_config(page_title="Metas TDV", layout="wide")
+st.set_page_config(page_title="Template-Sustentabilidade", layout="wide")
 
-# ================================================
-# CLONE DO REPOSITÓRIO DE MÓDULOS (MinIO / Supabase)
-# ================================================
+# Configuração Supabase
 modulos_dir = Path(__file__).parent / "Modulos"
+
+# Se o diretório ainda não existir, faz o clone direto do GitHub
 if not modulos_dir.exists():
     print("📥 Clonando repositório Modulos do GitHub...")
     subprocess.run(
@@ -31,6 +31,8 @@ if not modulos_dir.exists():
         ],
         check=True,
     )
+
+# Garante que o diretório está no caminho de importação
 if str(modulos_dir) not in sys.path:
     sys.path.insert(0, str(modulos_dir))
 
