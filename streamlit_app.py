@@ -247,6 +247,12 @@ def ir_para(tela: str) -> None:
 # em memória na sessão. Ao ligar o CRUD, basta trocar o corpo de
 # salvar_registro() pelo insert na tabela correspondente.
 
+def fmt_brl(valor: float) -> str:
+    """Formata no padrão pt-BR: 1234.5 -> R$ 1.234,50"""
+    texto = f"{valor:,.2f}".replace(",", "#").replace(".", ",").replace("#", ".")
+    return f"R$ {texto}"
+
+
 def salvar_registro(tabela: str, dados: dict) -> None:
     chave = f"dados_{tabela}"
     dados = dict(dados)
@@ -470,38 +476,63 @@ def tela_custos() -> None:
 # ================================================
 # 4) RECICLÁVEIS
 # ================================================
+# Esta tela NÃO usa st.form: dentro de um formulário o Streamlit só
+# reexecuta o script no submit, e o TOTAL (PESO x VALOR/KG) precisa
+# acompanhar a digitação. Com widgets soltos + key, cada alteração
+# dispara um rerun e o TOTAL é recalculado na hora.
+
+CAMPOS_RECICLAVEIS = ("rec_material", "rec_peso", "rec_valor_kg", "rec_pagamento")
+
+
+def salvar_reciclaveis() -> None:
+    """Callback do botão Salvar; roda antes do rerun, então pode limpar os campos."""
+    material = str(st.session_state.get("rec_material", "")).strip()
+    if not material:
+        st.session_state["rec_msg"] = ("warning", "Informe o MATERIAL.")
+        return
+
+    peso = float(st.session_state.get("rec_peso", 0.0))
+    valor_kg = float(st.session_state.get("rec_valor_kg", 0.0))
+    salvar_registro(
+        "reciclaveis",
+        {
+            "DATA": st.session_state.get("rec_data", date.today()),
+            "MATERIAL": material.upper(),
+            "PESO": peso,
+            "VALOR_KG": valor_kg,
+            "TOTAL": round(peso * valor_kg, 2),
+            "PAGAMENTO": str(st.session_state.get("rec_pagamento", "")).strip(),
+        },
+    )
+
+    for campo in CAMPOS_RECICLAVEIS:
+        st.session_state.pop(campo, None)
+    st.session_state["rec_msg"] = ("success", "Registro salvo na sessão (Supabase pendente).")
+
+
 def tela_reciclaveis() -> None:
     cabecalho_tela("reciclaveis")
 
-    with st.form("form_reciclaveis", clear_on_submit=True):
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            data_ref = st.date_input("DATA", value=date.today(), format="DD/MM/YYYY")
-            peso = st.number_input("PESO", min_value=0.0, step=0.01, format="%.2f")
-        with c2:
-            material = st.text_input("MATERIAL")
-            valor_kg = st.number_input("VALOR/KG", min_value=0.0, step=0.01, format="%.2f")
-        with c3:
-            pagamento = st.text_input("PAGAMENTO")
-            # TOTAL é calculado (PESO x VALOR/KG); atualiza ao enviar o formulário.
-            st.metric("TOTAL", f"R$ {peso * valor_kg:,.2f}")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.date_input("DATA", value=date.today(), format="DD/MM/YYYY", key="rec_data")
+        peso = st.number_input("PESO", min_value=0.0, step=0.01, format="%.2f", key="rec_peso")
+    with c2:
+        st.text_input("MATERIAL", key="rec_material")
+        valor_kg = st.number_input(
+            "VALOR/KG", min_value=0.0, step=0.01, format="%.2f", key="rec_valor_kg"
+        )
+    with c3:
+        st.text_input("PAGAMENTO", key="rec_pagamento")
+        st.metric("TOTAL", fmt_brl(peso * valor_kg))
 
-        if st.form_submit_button("💾 Salvar"):
-            if not material.strip():
-                st.warning("Informe o MATERIAL.")
-            else:
-                salvar_registro(
-                    "reciclaveis",
-                    {
-                        "DATA": data_ref,
-                        "MATERIAL": material.strip().upper(),
-                        "PESO": peso,
-                        "VALOR_KG": valor_kg,
-                        "TOTAL": round(peso * valor_kg, 2),
-                        "PAGAMENTO": pagamento.strip(),
-                    },
-                )
-                st.success("Registro salvo na sessão (Supabase pendente).")
+    st.button("💾 Salvar", key="btn_salvar_rec", on_click=salvar_reciclaveis)
+
+    tipo_msg, texto_msg = st.session_state.pop("rec_msg", (None, None))
+    if tipo_msg == "success":
+        st.success(texto_msg)
+    elif tipo_msg == "warning":
+        st.warning(texto_msg)
 
     mostrar_registros("reciclaveis")
 
