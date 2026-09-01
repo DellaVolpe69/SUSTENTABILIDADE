@@ -217,7 +217,313 @@ st.session_state["user_email"] = user_email
 # Só chega aqui quem já está autenticado e validado acima.
 usuario_email_logado = user_email.lower()
 
-st.title("🎈 My new app")
-st.write(
-    "Let's start building! For help and inspiration, head over to [docs.streamlit.io](https://docs.streamlit.io/)."
+
+# ================================================
+# NAVEGAÇÃO ENTRE TELAS
+# ================================================
+# Cada tela é identificada por uma chave em st.session_state["tela"].
+# "menu" é a tela inicial com os botões de acesso.
+
+TELAS = {
+    "consumos": "♻️ CONSUMOS E SERVIÇOS",
+    "licencas": "📄 CONTROLE DE LICENÇAS",
+    "custos": "💰 CUSTOS E ORÇAMENTOS",
+    "reciclaveis": "🗂️ RECICLÁVEIS",
+    "indicador": "📊 INDICADOR SUSTENTABILIDADE",
+}
+
+if "tela" not in st.session_state:
+    st.session_state["tela"] = "menu"
+
+
+def ir_para(tela: str) -> None:
+    st.session_state["tela"] = tela
+
+
+# ------------------------------------------------
+# Persistência provisória (ESBOÇO)
+# ------------------------------------------------
+# Enquanto o Supabase não estiver estruturado, os registros ficam apenas
+# em memória na sessão. Ao ligar o CRUD, basta trocar o corpo de
+# salvar_registro() pelo insert na tabela correspondente.
+
+def salvar_registro(tabela: str, dados: dict) -> None:
+    chave = f"dados_{tabela}"
+    dados = dict(dados)
+    dados["_usuario"] = usuario_email_logado
+    st.session_state.setdefault(chave, []).append(dados)
+
+
+def listar_registros(tabela: str) -> pd.DataFrame:
+    return pd.DataFrame(st.session_state.get(f"dados_{tabela}", []))
+
+
+def mostrar_registros(tabela: str) -> None:
+    df = listar_registros(tabela)
+    st.markdown("#### Registros lançados nesta sessão")
+    if df.empty:
+        st.caption("Nenhum registro lançado ainda.")
+    else:
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+
+# CSS dos botões do menu
+st.markdown(
+    """
+    <style>
+    div[data-testid="stButton"] > button {
+        background-color: rgba(0,0,0,0.35) !important;
+        color: white !important;
+        border: 2px solid #FF5D01 !important;
+        border-radius: 12px !important;
+        padding: 1.4em 1em !important;
+        font-size: 1.05rem !important;
+        font-weight: 600 !important;
+        width: 100% !important;
+        transition: 0.2s ease;
+    }
+    div[data-testid="stButton"] > button:hover {
+        background-color: #FF5D01 !important;
+        border: 2px solid white !important;
+        transform: scale(1.02);
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
+
+
+# ================================================
+# TELA INICIAL (MENU)
+# ================================================
+def tela_menu() -> None:
+    st.image(url_logo, width=260)
+    st.markdown("### Painel de Sustentabilidade")
+    st.caption(f"Bem-vindo(a), {user_name} — {usuario_email_logado}")
+    st.divider()
+
+    c1, c2 = st.columns(2, gap="large")
+    with c1:
+        st.button(TELAS["consumos"], key="btn_consumos", on_click=ir_para, args=("consumos",))
+        st.button(TELAS["custos"], key="btn_custos", on_click=ir_para, args=("custos",))
+        st.button(TELAS["indicador"], key="btn_indicador", on_click=ir_para, args=("indicador",))
+    with c2:
+        st.button(TELAS["licencas"], key="btn_licencas", on_click=ir_para, args=("licencas",))
+        st.button(TELAS["reciclaveis"], key="btn_reciclaveis", on_click=ir_para, args=("reciclaveis",))
+
+
+def cabecalho_tela(chave: str) -> None:
+    """Título da tela + botão de retorno ao menu."""
+    esq, dir_ = st.columns([6, 1])
+    with esq:
+        st.markdown(f"## {TELAS[chave]}")
+    with dir_:
+        st.button("⬅️ Voltar", key=f"voltar_{chave}", on_click=ir_para, args=("menu",))
+    st.divider()
+
+
+# ================================================
+# 1) CONSUMOS E SERVIÇOS
+# ================================================
+def tela_consumos() -> None:
+    cabecalho_tela("consumos")
+
+    with st.form("form_consumos", clear_on_submit=True):
+        c1, c2 = st.columns(2)
+        with c1:
+            filial = st.text_input("FILIAL")
+        with c2:
+            data_ref = st.date_input("DATA", value=date.today(), format="DD/MM/YYYY")
+
+        st.markdown("**Volumes / consumos**")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            solidos = st.number_input("SÓLIDOS CONTAMINADOS", min_value=0.0, step=0.01, format="%.2f")
+            energia = st.number_input("ENERGIA", min_value=0.0, step=0.01, format="%.2f")
+            reciclaveis = st.number_input("RECICLÁVEIS", min_value=0.0, step=0.01, format="%.2f")
+        with c2:
+            oleo = st.number_input("ÓLEO LUBRIFICANTE", min_value=0.0, step=0.01, format="%.2f")
+            comum = st.number_input("COMUM", min_value=0.0, step=0.01, format="%.2f")
+            co2 = st.number_input("CO²", min_value=0.0, step=0.01, format="%.2f")
+        with c3:
+            agua = st.number_input("ÁGUA", min_value=0.0, step=0.01, format="%.2f")
+            madeira = st.number_input("MADEIRA", min_value=0.0, step=0.01, format="%.2f")
+
+        if st.form_submit_button("💾 Salvar"):
+            if not filial.strip():
+                st.warning("Informe a FILIAL.")
+            else:
+                salvar_registro(
+                    "consumos",
+                    {
+                        "FILIAL": filial.strip().upper(),
+                        "DATA": data_ref,
+                        "SOLIDOS_CONTAMINADOS": solidos,
+                        "OLEO_LUBRIFICANTE": oleo,
+                        "AGUA": agua,
+                        "ENERGIA": energia,
+                        "COMUM": comum,
+                        "MADEIRA": madeira,
+                        "RECICLAVEIS": reciclaveis,
+                        "CO2": co2,
+                    },
+                )
+                st.success("Registro salvo na sessão (Supabase pendente).")
+
+    mostrar_registros("consumos")
+
+
+# ================================================
+# 2) CONTROLE DE LICENÇAS
+# ================================================
+CATEGORIAS_LICENCA = ["LICENCA", "AMBIENTAL"]
+
+
+def tela_licencas() -> None:
+    cabecalho_tela("licencas")
+
+    with st.form("form_licencas", clear_on_submit=True):
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            filial = st.text_input("FILIAL")
+            licenca = st.text_input("LICENÇA")
+            status = st.text_input("STATUS")
+        with c2:
+            rota = st.number_input("ROTA", min_value=0, step=1, format="%d")
+            dt_vencimento = st.date_input("DT VENCIMENTO", value=date.today(), format="DD/MM/YYYY")
+            categoria = st.selectbox("CATEGORIA", CATEGORIAS_LICENCA)
+        with c3:
+            cnpj = st.text_input("CNPJ")
+            dias_pre = st.number_input("DIAS PRÉ VENCIMENTO", min_value=0, step=1, format="%d")
+
+        observacao = st.text_area("OBSERVAÇÃO")
+
+        if st.form_submit_button("💾 Salvar"):
+            if not filial.strip():
+                st.warning("Informe a FILIAL.")
+            else:
+                salvar_registro(
+                    "licencas",
+                    {
+                        "FILIAL": filial.strip().upper(),
+                        "ROTA": int(rota),
+                        "CNPJ": cnpj.strip(),
+                        "LICENCA": licenca.strip(),
+                        "DT_VENCIMENTO": dt_vencimento,
+                        "DIAS_PRE_VENCIMENTO": int(dias_pre),
+                        "STATUS": status.strip(),
+                        "OBSERVACAO": observacao.strip(),
+                        "CATEGORIA": categoria,
+                    },
+                )
+                st.success("Registro salvo na sessão (Supabase pendente).")
+
+    mostrar_registros("licencas")
+
+
+# ================================================
+# 3) CUSTOS E ORÇAMENTOS
+# ================================================
+def tela_custos() -> None:
+    cabecalho_tela("custos")
+
+    with st.form("form_custos", clear_on_submit=True):
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            fornecedor = st.text_input("FORNECEDOR")
+            pedido = st.text_input("PEDIDO")
+            valor = st.number_input("VALOR", min_value=0.0, step=0.01, format="%.2f")
+        with c2:
+            filial = st.text_input("FILIAL")
+            migo = st.text_input("MIGO")
+            mes = st.number_input(
+                "MÊS", min_value=1, max_value=12, value=date.today().month, step=1, format="%d"
+            )
+        with c3:
+            nota_boleta = st.text_input("NOTA/BOLETA")
+            ng = st.text_input("NG")
+            dt_pagamento = st.date_input("DATA PAGAMENTO", value=date.today(), format="DD/MM/YYYY")
+
+        if st.form_submit_button("💾 Salvar"):
+            if not fornecedor.strip():
+                st.warning("Informe o FORNECEDOR.")
+            else:
+                salvar_registro(
+                    "custos",
+                    {
+                        "FORNECEDOR": fornecedor.strip().upper(),
+                        "FILIAL": filial.strip().upper(),
+                        "NOTA_BOLETA": nota_boleta.strip(),
+                        "PEDIDO": pedido.strip(),
+                        "MIGO": migo.strip(),
+                        "NG": ng.strip(),
+                        "VALOR": valor,
+                        "MES": int(mes),
+                        "DATA_PAGAMENTO": dt_pagamento,
+                    },
+                )
+                st.success("Registro salvo na sessão (Supabase pendente).")
+
+    mostrar_registros("custos")
+
+
+# ================================================
+# 4) RECICLÁVEIS
+# ================================================
+def tela_reciclaveis() -> None:
+    cabecalho_tela("reciclaveis")
+
+    with st.form("form_reciclaveis", clear_on_submit=True):
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            data_ref = st.date_input("DATA", value=date.today(), format="DD/MM/YYYY")
+            peso = st.number_input("PESO", min_value=0.0, step=0.01, format="%.2f")
+        with c2:
+            material = st.text_input("MATERIAL")
+            valor_kg = st.number_input("VALOR/KG", min_value=0.0, step=0.01, format="%.2f")
+        with c3:
+            pagamento = st.text_input("PAGAMENTO")
+            # TOTAL é calculado (PESO x VALOR/KG); atualiza ao enviar o formulário.
+            st.metric("TOTAL", f"R$ {peso * valor_kg:,.2f}")
+
+        if st.form_submit_button("💾 Salvar"):
+            if not material.strip():
+                st.warning("Informe o MATERIAL.")
+            else:
+                salvar_registro(
+                    "reciclaveis",
+                    {
+                        "DATA": data_ref,
+                        "MATERIAL": material.strip().upper(),
+                        "PESO": peso,
+                        "VALOR_KG": valor_kg,
+                        "TOTAL": round(peso * valor_kg, 2),
+                        "PAGAMENTO": pagamento.strip(),
+                    },
+                )
+                st.success("Registro salvo na sessão (Supabase pendente).")
+
+    mostrar_registros("reciclaveis")
+
+
+# ================================================
+# 5) INDICADOR SUSTENTABILIDADE
+# ================================================
+def tela_indicador() -> None:
+    cabecalho_tela("indicador")
+    st.info("Tela em construção — visualização do indicador.")
+
+
+# ================================================
+# ROTEADOR
+# ================================================
+ROTAS = {
+    "menu": tela_menu,
+    "consumos": tela_consumos,
+    "licencas": tela_licencas,
+    "custos": tela_custos,
+    "reciclaveis": tela_reciclaveis,
+    "indicador": tela_indicador,
+}
+
+ROTAS.get(st.session_state["tela"], tela_menu)()
