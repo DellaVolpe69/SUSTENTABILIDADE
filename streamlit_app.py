@@ -482,6 +482,7 @@ def tela_custos() -> None:
 # dispara um rerun e o TOTAL é recalculado na hora.
 
 CAMPOS_RECICLAVEIS = ("rec_material", "rec_peso", "rec_valor_kg", "rec_pagamento")
+OPCOES_PAGAMENTO = ["Pg Recebido", "Aguardando Pagamento"]
 
 
 def salvar_reciclaveis() -> None:
@@ -501,7 +502,7 @@ def salvar_reciclaveis() -> None:
             "PESO": peso,
             "VALOR_KG": valor_kg,
             "TOTAL": round(peso * valor_kg, 2),
-            "PAGAMENTO": str(st.session_state.get("rec_pagamento", "")).strip(),
+            "PAGAMENTO": st.session_state.get("rec_pagamento", OPCOES_PAGAMENTO[0]),
         },
     )
 
@@ -523,7 +524,7 @@ def tela_reciclaveis() -> None:
             "VALOR/KG", min_value=0.0, step=0.01, format="%.2f", key="rec_valor_kg"
         )
     with c3:
-        st.text_input("PAGAMENTO", key="rec_pagamento")
+        st.selectbox("PAGAMENTO", OPCOES_PAGAMENTO, key="rec_pagamento")
         st.metric("TOTAL", fmt_brl(peso * valor_kg))
 
     st.button("💾 Salvar", key="btn_salvar_rec", on_click=salvar_reciclaveis)
