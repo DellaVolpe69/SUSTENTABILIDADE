@@ -621,6 +621,7 @@ def tela_consumos() -> None:
 # 2) CONTROLE DE LICENÇAS  ->  SUSTENTABILIDADE_LICENCAS
 # ================================================
 CATEGORIAS_LICENCA = ["LICENCA", "AMBIENTAL"]
+OPCOES_STATUS = ["NO PRAZO", "VENCIDO", "RENOVAR", "NÃO SE APLICA"]
 TIPOS_EVIDENCIA = ["png", "jpg", "jpeg", "pdf"]
 CAMPOS_LICENCA = (
     "lic_filial",
@@ -664,7 +665,7 @@ def salvar_licenca() -> None:
         "LICENCA": txt("lic_licenca"),
         COL_DT_VENCIMENTO: st.session_state.get("lic_dt_venc", date.today()),
         COL_DIAS: int(st.session_state.get("lic_dias_pre", 0)),
-        "STATUS": txt("lic_status"),
+        "STATUS": st.session_state.get("lic_status", OPCOES_STATUS[0]),
         "OBSERVACAO": txt("lic_obs"),
         "CATEGORIA": st.session_state.get("lic_categoria", CATEGORIAS_LICENCA[0]),
         "USUARIO": usuario_email_logado,
@@ -700,7 +701,7 @@ def tela_licencas() -> None:
     with c1:
         st.text_input("FILIAL", key="lic_filial")
         st.text_input("LICENÇA", key="lic_licenca")
-        st.text_input("STATUS", key="lic_status")
+        st.selectbox("STATUS", OPCOES_STATUS, key="lic_status")
     with c2:
         st.number_input("ROTA", min_value=0, step=1, format="%d", key="lic_rota")
         st.date_input("DT VENCIMENTO", value=date.today(), format="DD/MM/YYYY", key="lic_dt_venc")
