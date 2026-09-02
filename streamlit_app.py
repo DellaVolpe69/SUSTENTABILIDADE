@@ -555,9 +555,15 @@ def cabecalho_tela(chave: str) -> None:
 # usuário perderia o que digitou. Widgets com key + callback deixam a
 # limpeza condicionada ao sucesso.
 
+MESES = [
+    "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
+    "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro",
+]
+
 CAMPOS_CONSUMO = (
     "con_filial",
-    "con_data",
+    "con_ano",
+    "con_mes",
     "con_solidos",
     "con_oleo",
     "con_agua",
@@ -569,6 +575,17 @@ CAMPOS_CONSUMO = (
 )
 
 
+def competencia_consumo() -> date:
+    """ANO + MÊS escolhidos -> primeiro dia do mês.
+
+    A coluna DATA da tabela é date; guardar o dia 1 mantém o lançamento
+    ordenável e filtrável por período de verdade, sem coluna nova.
+    """
+    ano = int(st.session_state.get("con_ano", date.today().year))
+    nome_mes = st.session_state.get("con_mes", MESES[date.today().month - 1])
+    return date(ano, MESES.index(nome_mes) + 1, 1)
+
+
 def salvar_consumo() -> None:
     if not txt("con_filial"):
         st.session_state["msg_consumos"] = ("warning", "Informe a FILIAL.")
@@ -576,7 +593,7 @@ def salvar_consumo() -> None:
     # SUSTENTABILIDADE_CONSUMO não tem coluna USUARIO (ver observação).
     dados = {
         "FILIAL": txt("con_filial").upper(),
-        "DATA": st.session_state.get("con_data", date.today()),
+        "DATA": competencia_consumo(),
         COL_SOLIDOS: st.session_state.get("con_solidos", 0.0),
         COL_OLEO: st.session_state.get("con_oleo", 0.0),
         "AGUA": st.session_state.get("con_agua", 0.0),
@@ -592,11 +609,23 @@ def salvar_consumo() -> None:
 def tela_consumos() -> None:
     cabecalho_tela("consumos")
 
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     with c1:
         st.text_input("FILIAL", key="con_filial")
     with c2:
-        st.date_input("DATA", value=date.today(), format="DD/MM/YYYY", key="con_data")
+        st.number_input(
+            "ANO",
+            min_value=2000,
+            max_value=date.today().year + 1,
+            value=date.today().year,
+            step=1,
+            format="%d",
+            key="con_ano",
+        )
+    with c3:
+        st.selectbox("MÊS", MESES, index=date.today().month - 1, key="con_mes")
+
+    st.caption(f"Competência gravada em DATA: {competencia_consumo():%d/%m/%Y}")
 
     st.markdown("**Volumes / consumos**")
     c1, c2, c3 = st.columns(3)
