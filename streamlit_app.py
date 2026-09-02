@@ -36,6 +36,41 @@ if not modulos_dir.exists():
 if str(modulos_dir) not in sys.path:
     sys.path.insert(0, str(modulos_dir))
 
+# ------------------------------------------------
+# CREDENCIAIS DO SUPABASE (ponte secrets -> ambiente)
+# ------------------------------------------------
+# ConectionSupaBase.py lê SUPABASE_URL / SUPABASE_KEY de os.getenv() no
+# nível do módulo, ou seja, NO MOMENTO DO IMPORT — e st.secrets não popula
+# o ambiente. Sem esta ponte, e sem ela vir antes do import, conexao()
+# levanta ValueError mesmo com os secrets preenchidos no Streamlit Cloud.
+
+
+# def secret(*nomes):
+#     """Primeiro secret existente entre os nomes aceitos."""
+#     for nome in nomes:
+#         try:
+#             if nome in st.secrets:
+#                 return st.secrets[nome]
+#         except Exception:
+#             pass
+#     return None
+
+
+# SUPABASE_URL = secret("SUPABASE_URL", "supabase_url")
+# SUPABASE_KEY = secret(
+#     "SUPABASE_KEY",
+#     "SUPABASE_ANON_KEY",
+#     "SUPABASE_SERVICE_KEY",
+#     "SUPABASE_SERVICE_ROLE_KEY",
+#     "supabase_key",
+# )
+
+# if SUPABASE_URL:
+#     os.environ["SUPABASE_URL"] = str(SUPABASE_URL)
+# if SUPABASE_KEY:
+#     os.environ["SUPABASE_KEY"] = str(SUPABASE_KEY)
+
+
 import Modulos.Minio.examples.MinIO as meu_minio
 from Modulos import ConectionSupaBase
 
@@ -212,18 +247,122 @@ st.session_state["user_email"] = user_email
 # ================================================
 # CONEXÃO SUPABASE
 # ================================================
-# supabase = ConectionSupaBase.conexao()
+# O cliente é criado sob demanda em conectar_supabase(), com cache_resource.
 
 # Só chega aqui quem já está autenticado e validado acima.
 usuario_email_logado = user_email.lower()
+
+# ================================================
+# TABELAS E COLUNAS DO SUPABASE
+# ================================================
+TABELAS_DB = {
+    "consumos": "SUSTENTABILIDADE_CONSUMO",
+    "licencas": "SUSTENTABILIDADE_LICENCAS",
+    "custos": "SUSTENTABILIDADE_CUSTO",
+    "reciclaveis": "SUSTENTABILIDADE_RECICLAVEIS",
+}
+
+# Nomes que apareciam cortados na tela do Supabase. Se algum divergir, o
+# insert falha citando a coluna — corrija aqui, num lugar só.
+COL_SOLIDOS = "SOLIDOS_CONTAMINADOS"
+COL_OLEO = "OLEO_LUBRIFICANTE"
+COL_DT_VENCIMENTO = "DT_VENCIMENTO"
+COL_DATA_PAGAMENTO = "DATA_PAGAMENTO"
+
+
+@st.cache_resource(show_spinner=False)
+def conectar_supabase():
+    """Um cliente por processo — create_client a cada rerun é desperdício."""
+    return ConectionSupaBase.conexao()
+
+
+def json_seguro(dados: dict) -> dict:
+    """date/datetime não são serializáveis em JSON; o cliente quebraria."""
+    saida = {}
+    for chave, valor in dados.items():
+        if isinstance(valor, (datetime, date)):
+            saida[chave] = valor.isoformat()
+        elif hasattr(valor, "item"):  # escalares numpy vindos dos inputs
+            saida[chave] = valor.item()
+        else:
+            saida[chave] = valor
+    return saida
+
+
+def inserir(tabela_app: str, dados: dict):
+    """Grava no Supabase. Devolve (ok, mensagem)."""
+    try:
+        cliente = conectar_supabase()
+        cliente.table(TABELAS_DB[tabela_app]).insert(json_seguro(dados)).execute()
+        return True, "Registro gravado no Supabase."
+    except Exception as erro:
+        return False, f"Não gravou: {erro}"
+
+
+def listar_registros(tabela_app: str, limite: int = 50) -> pd.DataFrame:
+    cliente = conectar_supabase()
+    resposta = (
+        cliente.table(TABELAS_DB[tabela_app])
+        .select("*")
+        .order("id", desc=True)
+        .limit(limite)
+        .execute()
+    )
+    return pd.DataFrame(resposta.data or [])
+
+
+def mostrar_registros(tabela_app: str) -> None:
+    st.markdown("#### Últimos registros")
+    try:
+        df = listar_registros(tabela_app)
+    except Exception as erro:
+        st.error(f"Não foi possível ler {TABELAS_DB[tabela_app]}: {erro}")
+        return
+    if df.empty:
+        st.caption(
+            "Nenhum registro. Se você acabou de gravar e nada aparece, "
+            "é a RLS sem política de SELECT."
+        )
+    else:
+        st.dataframe(df, hide_index=True)
+
+
+def concluir(chave_msg: str, tabela_app: str, dados: dict, campos: tuple, apos_ok=None) -> None:
+    """Grava e só limpa os campos se o insert passou — falha não apaga o que
+    foi digitado."""
+    ok, msg = inserir(tabela_app, dados)
+    st.session_state[chave_msg] = ("success" if ok else "error", msg)
+    if not ok:
+        return
+    for campo in campos:
+        st.session_state.pop(campo, None)
+    if apos_ok is not None:
+        apos_ok()
+
+
+def render_msg(chave_msg: str) -> None:
+    tipo, texto = st.session_state.pop(chave_msg, (None, None))
+    if tipo == "success":
+        st.success(texto)
+    elif tipo == "warning":
+        st.warning(texto)
+    elif tipo == "error":
+        st.error(texto)
+
+
+def fmt_brl(valor: float) -> str:
+    """Formata no padrão pt-BR: 1234.5 -> R$ 1.234,50"""
+    texto = f"{valor:,.2f}".replace(",", "#").replace(".", ",").replace("#", ".")
+    return f"R$ {texto}"
+
+
+def txt(chave: str) -> str:
+    return str(st.session_state.get(chave, "")).strip()
 
 
 # ================================================
 # NAVEGAÇÃO ENTRE TELAS
 # ================================================
-# Cada tela é identificada por uma chave em st.session_state["tela"].
-# "menu" é a tela inicial com os botões de acesso.
-
 TELAS = {
     "consumos": "♻️ CONSUMOS E SERVIÇOS",
     "licencas": "📄 CONTROLE DE LICENÇAS",
@@ -238,39 +377,6 @@ if "tela" not in st.session_state:
 
 def ir_para(tela: str) -> None:
     st.session_state["tela"] = tela
-
-
-# ------------------------------------------------
-# Persistência provisória (ESBOÇO)
-# ------------------------------------------------
-# Enquanto o Supabase não estiver estruturado, os registros ficam apenas
-# em memória na sessão. Ao ligar o CRUD, basta trocar o corpo de
-# salvar_registro() pelo insert na tabela correspondente.
-
-def fmt_brl(valor: float) -> str:
-    """Formata no padrão pt-BR: 1234.5 -> R$ 1.234,50"""
-    texto = f"{valor:,.2f}".replace(",", "#").replace(".", ",").replace("#", ".")
-    return f"R$ {texto}"
-
-
-def salvar_registro(tabela: str, dados: dict) -> None:
-    chave = f"dados_{tabela}"
-    dados = dict(dados)
-    dados["_usuario"] = usuario_email_logado
-    st.session_state.setdefault(chave, []).append(dados)
-
-
-def listar_registros(tabela: str) -> pd.DataFrame:
-    return pd.DataFrame(st.session_state.get(f"dados_{tabela}", []))
-
-
-def mostrar_registros(tabela: str) -> None:
-    df = listar_registros(tabela)
-    st.markdown("#### Registros lançados nesta sessão")
-    if df.empty:
-        st.caption("Nenhum registro lançado ainda.")
-    else:
-        st.dataframe(df, use_container_width=True, hide_index=True)
 
 
 # CSS dos botões do menu
@@ -293,6 +399,10 @@ st.markdown(
         border: 2px solid white !important;
         transform: scale(1.02);
     }
+    div[data-testid="stButton"] > button:disabled {
+        border-color: rgba(255,255,255,0.25) !important;
+        color: rgba(255,255,255,0.45) !important;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -306,6 +416,13 @@ def tela_menu() -> None:
     st.image(url_logo, width=260)
     st.markdown("### Painel de Sustentabilidade")
     st.caption(f"Bem-vindo(a), {user_name} — {usuario_email_logado}")
+
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        st.error(
+            "SUPABASE_URL e/ou SUPABASE_KEY não encontrados em st.secrets — "
+            "nenhuma tela vai gravar."
+        )
+
     st.divider()
 
     c1, c2 = st.columns(2, gap="large")
@@ -329,65 +446,78 @@ def cabecalho_tela(chave: str) -> None:
 
 
 # ================================================
-# 1) CONSUMOS E SERVIÇOS
+# 1) CONSUMOS E SERVIÇOS  ->  SUSTENTABILIDADE_CONSUMO
 # ================================================
+# Nenhuma tela usa st.form: com clear_on_submit os campos seriam apagados
+# também quando o insert falhasse (RLS, rede, coluna divergente), e o
+# usuário perderia o que digitou. Widgets com key + callback deixam a
+# limpeza condicionada ao sucesso.
+
+CAMPOS_CONSUMO = (
+    "con_filial",
+    "con_data",
+    "con_solidos",
+    "con_oleo",
+    "con_agua",
+    "con_energia",
+    "con_comum",
+    "con_madeira",
+    "con_reciclaveis",
+    "con_co2",
+)
+
+
+def salvar_consumo() -> None:
+    if not txt("con_filial"):
+        st.session_state["msg_consumos"] = ("warning", "Informe a FILIAL.")
+        return
+    # SUSTENTABILIDADE_CONSUMO não tem coluna USUARIO (ver observação).
+    dados = {
+        "FILIAL": txt("con_filial").upper(),
+        "DATA": st.session_state.get("con_data", date.today()),
+        COL_SOLIDOS: st.session_state.get("con_solidos", 0.0),
+        COL_OLEO: st.session_state.get("con_oleo", 0.0),
+        "AGUA": st.session_state.get("con_agua", 0.0),
+        "ENERGIA": st.session_state.get("con_energia", 0.0),
+        "COMUM": st.session_state.get("con_comum", 0.0),
+        "MADEIRA": st.session_state.get("con_madeira", 0.0),
+        "RECICLAVEIS": st.session_state.get("con_reciclaveis", 0.0),
+        "CO2": st.session_state.get("con_co2", 0.0),
+    }
+    concluir("msg_consumos", "consumos", dados, CAMPOS_CONSUMO)
+
+
 def tela_consumos() -> None:
     cabecalho_tela("consumos")
 
-    with st.form("form_consumos", clear_on_submit=True):
-        c1, c2 = st.columns(2)
-        with c1:
-            filial = st.text_input("FILIAL")
-        with c2:
-            data_ref = st.date_input("DATA", value=date.today(), format="DD/MM/YYYY")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.text_input("FILIAL", key="con_filial")
+    with c2:
+        st.date_input("DATA", value=date.today(), format="DD/MM/YYYY", key="con_data")
 
-        st.markdown("**Volumes / consumos**")
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            solidos = st.number_input("SÓLIDOS CONTAMINADOS", min_value=0.0, step=0.01, format="%.2f")
-            energia = st.number_input("ENERGIA", min_value=0.0, step=0.01, format="%.2f")
-            reciclaveis = st.number_input("RECICLÁVEIS", min_value=0.0, step=0.01, format="%.2f")
-        with c2:
-            oleo = st.number_input("ÓLEO LUBRIFICANTE", min_value=0.0, step=0.01, format="%.2f")
-            comum = st.number_input("COMUM", min_value=0.0, step=0.01, format="%.2f")
-            co2 = st.number_input("CO²", min_value=0.0, step=0.01, format="%.2f")
-        with c3:
-            agua = st.number_input("ÁGUA", min_value=0.0, step=0.01, format="%.2f")
-            madeira = st.number_input("MADEIRA", min_value=0.0, step=0.01, format="%.2f")
+    st.markdown("**Volumes / consumos**")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.number_input("SÓLIDOS CONTAMINADOS", min_value=0.0, step=0.01, format="%.2f", key="con_solidos")
+        st.number_input("ENERGIA", min_value=0.0, step=0.01, format="%.2f", key="con_energia")
+        st.number_input("RECICLÁVEIS", min_value=0.0, step=0.01, format="%.2f", key="con_reciclaveis")
+    with c2:
+        st.number_input("ÓLEO LUBRIFICANTE", min_value=0.0, step=0.01, format="%.2f", key="con_oleo")
+        st.number_input("COMUM", min_value=0.0, step=0.01, format="%.2f", key="con_comum")
+        st.number_input("CO²", min_value=0.0, step=0.01, format="%.2f", key="con_co2")
+    with c3:
+        st.number_input("ÁGUA", min_value=0.0, step=0.01, format="%.2f", key="con_agua")
+        st.number_input("MADEIRA", min_value=0.0, step=0.01, format="%.2f", key="con_madeira")
 
-        if st.form_submit_button("💾 Salvar"):
-            if not filial.strip():
-                st.warning("Informe a FILIAL.")
-            else:
-                salvar_registro(
-                    "consumos",
-                    {
-                        "FILIAL": filial.strip().upper(),
-                        "DATA": data_ref,
-                        "SOLIDOS_CONTAMINADOS": solidos,
-                        "OLEO_LUBRIFICANTE": oleo,
-                        "AGUA": agua,
-                        "ENERGIA": energia,
-                        "COMUM": comum,
-                        "MADEIRA": madeira,
-                        "RECICLAVEIS": reciclaveis,
-                        "CO2": co2,
-                    },
-                )
-                st.success("Registro salvo na sessão (Supabase pendente).")
-
+    st.button("💾 Salvar", key="btn_salvar_con", on_click=salvar_consumo)
+    render_msg("msg_consumos")
     mostrar_registros("consumos")
 
 
 # ================================================
-# 2) CONTROLE DE LICENÇAS
+# 2) CONTROLE DE LICENÇAS  ->  SUSTENTABILIDADE_LICENCAS
 # ================================================
-# Esta tela NÃO usa st.form por causa da evidência obrigatória: dentro de um
-# form o botão não consegue reagir ao anexo (só há rerun no submit), e o
-# clear_on_submit apagaria os 9 campos digitados sempre que a validação
-# barrasse o registro. Com widgets soltos + callback, o Salvar só habilita
-# depois do anexo e nada é perdido quando a validação reprova.
-
 CATEGORIAS_LICENCA = ["LICENCA", "AMBIENTAL"]
 TIPOS_EVIDENCIA = ["png", "jpg", "jpeg", "pdf"]
 CAMPOS_LICENCA = (
@@ -412,46 +542,38 @@ def chave_evidencia() -> str:
 
 
 def salvar_licenca() -> None:
-    """Callback do botão Salvar; roda antes do rerun, então pode limpar os campos."""
-    filial = str(st.session_state.get("lic_filial", "")).strip()
     arquivo = st.session_state.get(chave_evidencia())
 
     faltando = []
-    if not filial:
+    if not txt("lic_filial"):
         faltando.append("FILIAL")
     if arquivo is None:
         faltando.append("Licença (evidência)")
     if faltando:
-        st.session_state["lic_msg"] = ("warning", "Obrigatório: " + ", ".join(faltando))
+        st.session_state["msg_licencas"] = ("warning", "Obrigatório: " + ", ".join(faltando))
         return
 
-    salvar_registro(
-        "licencas",
-        {
-            "FILIAL": filial.upper(),
-            "ROTA": int(st.session_state.get("lic_rota", 0)),
-            "CNPJ": str(st.session_state.get("lic_cnpj", "")).strip(),
-            "LICENCA": str(st.session_state.get("lic_licenca", "")).strip(),
-            "DT_VENCIMENTO": st.session_state.get("lic_dt_venc", date.today()),
-            "DIAS_PRE_VENCIMENTO": int(st.session_state.get("lic_dias_pre", 0)),
-            "STATUS": str(st.session_state.get("lic_status", "")).strip(),
-            "OBSERVACAO": str(st.session_state.get("lic_obs", "")).strip(),
-            "CATEGORIA": st.session_state.get("lic_categoria", CATEGORIAS_LICENCA[0]),
-            "EVIDENCIA": arquivo.name,
-            "EVIDENCIA_TIPO": arquivo.type,
-            "EVIDENCIA_KB": round(arquivo.size / 1024, 1),
-        },
-    )
+    # DIAS_PRE_VENCIMENTO e a evidência não têm coluna na tabela ainda,
+    # por isso ficam fora do payload (ver observação).
+    dados = {
+        "FILIAL": txt("lic_filial").upper(),
+        "ROTA": int(st.session_state.get("lic_rota", 0)),
+        "CNPJ": txt("lic_cnpj"),
+        "LICENCA": txt("lic_licenca"),
+        COL_DT_VENCIMENTO: st.session_state.get("lic_dt_venc", date.today()),
+        "STATUS": txt("lic_status"),
+        "OBSERVACAO": txt("lic_obs"),
+        "CATEGORIA": st.session_state.get("lic_categoria", CATEGORIAS_LICENCA[0]),
+        "USUARIO": usuario_email_logado,
+    }
 
-    # O binário fica fora da tabela exibida; amanhã sobe para o Storage.
+    def limpar_upload() -> None:
+        st.session_state["lic_upload_n"] += 1
+
     st.session_state.setdefault("arquivos_licenca", []).append(
         {"nome": arquivo.name, "tipo": arquivo.type, "bytes": arquivo.getvalue()}
     )
-
-    for campo in CAMPOS_LICENCA:
-        st.session_state.pop(campo, None)
-    st.session_state["lic_upload_n"] += 1
-    st.session_state["lic_msg"] = ("success", "Registro salvo na sessão (Supabase pendente).")
+    concluir("msg_licencas", "licencas", dados, CAMPOS_LICENCA, apos_ok=limpar_upload)
 
 
 def tela_licencas() -> None:
@@ -488,106 +610,111 @@ def tela_licencas() -> None:
             else:
                 st.success(f"📎 {arquivo.name} · {arquivo.size / 1024:,.1f} KB")
 
-    st.button(
-        "💾 Salvar",
-        key="btn_salvar_lic",
-        on_click=salvar_licenca,
-        disabled=arquivo is None,
-    )
+    st.button("💾 Salvar", key="btn_salvar_lic", on_click=salvar_licenca, disabled=arquivo is None)
     if arquivo is None:
         st.caption("Anexe a Licença para liberar o Salvar.")
 
-    tipo_msg, texto_msg = st.session_state.pop("lic_msg", (None, None))
-    if tipo_msg == "success":
-        st.success(texto_msg)
-    elif tipo_msg == "warning":
-        st.warning(texto_msg)
-
+    render_msg("msg_licencas")
+    st.caption(
+        "⚠️ O arquivo continua só na sessão: a tabela não tem coluna de "
+        "evidência nem existe bucket no Storage. DIAS PRÉ VENCIMENTO também "
+        "não é gravado por falta de coluna."
+    )
     mostrar_registros("licencas")
 
 
 # ================================================
-# 3) CUSTOS E ORÇAMENTOS
+# 3) CUSTOS E ORÇAMENTOS  ->  SUSTENTABILIDADE_CUSTO
 # ================================================
+CAMPOS_CUSTO = (
+    "cus_fornecedor",
+    "cus_filial",
+    "cus_nota",
+    "cus_pedido",
+    "cus_migo",
+    "cus_ng",
+    "cus_valor",
+    "cus_mes",
+    "cus_dt_pag",
+)
+
+
+def salvar_custo() -> None:
+    if not txt("cus_fornecedor"):
+        st.session_state["msg_custos"] = ("warning", "Informe o FORNECEDOR.")
+        return
+    dados = {
+        "FORNECEDOR": txt("cus_fornecedor").upper(),
+        "FILIAL": txt("cus_filial").upper(),
+        "NOTA_BOLETO": txt("cus_nota"),
+        "PEDIDO": txt("cus_pedido"),
+        "MIGO": txt("cus_migo"),
+        "NG": txt("cus_ng"),
+        "VALOR": st.session_state.get("cus_valor", 0.0),
+        "MES": int(st.session_state.get("cus_mes", date.today().month)),
+        COL_DATA_PAGAMENTO: st.session_state.get("cus_dt_pag", date.today()),
+        "USUARIO": usuario_email_logado,
+    }
+    concluir("msg_custos", "custos", dados, CAMPOS_CUSTO)
+
+
 def tela_custos() -> None:
     cabecalho_tela("custos")
 
-    with st.form("form_custos", clear_on_submit=True):
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            fornecedor = st.text_input("FORNECEDOR")
-            pedido = st.text_input("PEDIDO")
-            valor = st.number_input("VALOR", min_value=0.0, step=0.01, format="%.2f")
-        with c2:
-            filial = st.text_input("FILIAL")
-            migo = st.text_input("MIGO")
-            mes = st.number_input(
-                "MÊS", min_value=1, max_value=12, value=date.today().month, step=1, format="%d"
-            )
-        with c3:
-            nota_boleta = st.text_input("NOTA/BOLETA")
-            ng = st.text_input("NG")
-            dt_pagamento = st.date_input("DATA PAGAMENTO", value=date.today(), format="DD/MM/YYYY")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.text_input("FORNECEDOR", key="cus_fornecedor")
+        st.text_input("PEDIDO", key="cus_pedido")
+        st.number_input("VALOR", min_value=0.0, step=0.01, format="%.2f", key="cus_valor")
+    with c2:
+        st.text_input("FILIAL", key="cus_filial")
+        st.text_input("MIGO", key="cus_migo")
+        st.number_input(
+            "MÊS", min_value=1, max_value=12, value=date.today().month, step=1,
+            format="%d", key="cus_mes",
+        )
+    with c3:
+        st.text_input("NOTA/BOLETO", key="cus_nota")
+        st.text_input("NG", key="cus_ng")
+        st.date_input("DATA PAGAMENTO", value=date.today(), format="DD/MM/YYYY", key="cus_dt_pag")
 
-        if st.form_submit_button("💾 Salvar"):
-            if not fornecedor.strip():
-                st.warning("Informe o FORNECEDOR.")
-            else:
-                salvar_registro(
-                    "custos",
-                    {
-                        "FORNECEDOR": fornecedor.strip().upper(),
-                        "FILIAL": filial.strip().upper(),
-                        "NOTA_BOLETA": nota_boleta.strip(),
-                        "PEDIDO": pedido.strip(),
-                        "MIGO": migo.strip(),
-                        "NG": ng.strip(),
-                        "VALOR": valor,
-                        "MES": int(mes),
-                        "DATA_PAGAMENTO": dt_pagamento,
-                    },
-                )
-                st.success("Registro salvo na sessão (Supabase pendente).")
-
+    st.button("💾 Salvar", key="btn_salvar_cus", on_click=salvar_custo)
+    render_msg("msg_custos")
     mostrar_registros("custos")
 
 
 # ================================================
-# 4) RECICLÁVEIS
+# 4) RECICLÁVEIS  ->  SUSTENTABILIDADE_RECICLAVEIS
 # ================================================
-# Esta tela NÃO usa st.form: dentro de um formulário o Streamlit só
-# reexecuta o script no submit, e o TOTAL (PESO x VALOR/KG) precisa
-# acompanhar a digitação. Com widgets soltos + key, cada alteração
-# dispara um rerun e o TOTAL é recalculado na hora.
-
-CAMPOS_RECICLAVEIS = ("rec_material", "rec_peso", "rec_valor_kg", "rec_pagamento")
+# Sem st.form também porque o TOTAL (PESO x VALOR/KG) precisa acompanhar a
+# digitação — dentro de um form só haveria rerun no submit.
+CAMPOS_RECICLAVEIS = ("rec_filial", "rec_material", "rec_peso", "rec_valor_kg", "rec_pagamento")
 OPCOES_PAGAMENTO = ["Pg Recebido", "Aguardando Pagamento"]
 
 
 def salvar_reciclaveis() -> None:
-    """Callback do botão Salvar; roda antes do rerun, então pode limpar os campos."""
-    material = str(st.session_state.get("rec_material", "")).strip()
-    if not material:
-        st.session_state["rec_msg"] = ("warning", "Informe o MATERIAL.")
+    faltando = []
+    if not txt("rec_filial"):
+        faltando.append("FILIAL")
+    if not txt("rec_material"):
+        faltando.append("MATERIAL")
+    if faltando:
+        st.session_state["msg_reciclaveis"] = ("warning", "Obrigatório: " + ", ".join(faltando))
         return
 
     peso = float(st.session_state.get("rec_peso", 0.0))
     valor_kg = float(st.session_state.get("rec_valor_kg", 0.0))
-    salvar_registro(
-        "reciclaveis",
-        {
-            "DATA": st.session_state.get("rec_data", date.today()),
-            "MATERIAL": material.upper(),
-            "PESO": peso,
-            "VALOR_KG": valor_kg,
-            "TOTAL": round(peso * valor_kg, 2),
-            "PAGAMENTO": st.session_state.get("rec_pagamento", OPCOES_PAGAMENTO[0]),
-        },
-    )
-
-    for campo in CAMPOS_RECICLAVEIS:
-        st.session_state.pop(campo, None)
-    st.session_state["rec_msg"] = ("success", "Registro salvo na sessão (Supabase pendente).")
+    dados = {
+        "FILIAL": txt("rec_filial").upper(),
+        "DATA": st.session_state.get("rec_data", date.today()),
+        "MATERIAL": txt("rec_material").upper(),
+        "PESO": peso,
+        "VALOR_KG": valor_kg,
+        "TOTAL": round(peso * valor_kg, 2),
+        "PAGAMENTO": st.session_state.get("rec_pagamento", OPCOES_PAGAMENTO[0]),
+        "USUARIO": usuario_email_logado,
+    }
+    concluir("msg_reciclaveis", "reciclaveis", dados, CAMPOS_RECICLAVEIS)
 
 
 def tela_reciclaveis() -> None:
@@ -595,6 +722,7 @@ def tela_reciclaveis() -> None:
 
     c1, c2, c3 = st.columns(3)
     with c1:
+        st.text_input("FILIAL", key="rec_filial")
         st.date_input("DATA", value=date.today(), format="DD/MM/YYYY", key="rec_data")
         peso = st.number_input("PESO", min_value=0.0, step=0.01, format="%.2f", key="rec_peso")
     with c2:
@@ -607,13 +735,7 @@ def tela_reciclaveis() -> None:
         st.metric("TOTAL", fmt_brl(peso * valor_kg))
 
     st.button("💾 Salvar", key="btn_salvar_rec", on_click=salvar_reciclaveis)
-
-    tipo_msg, texto_msg = st.session_state.pop("rec_msg", (None, None))
-    if tipo_msg == "success":
-        st.success(texto_msg)
-    elif tipo_msg == "warning":
-        st.warning(texto_msg)
-
+    render_msg("msg_reciclaveis")
     mostrar_registros("reciclaveis")
 
 
