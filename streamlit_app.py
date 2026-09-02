@@ -45,30 +45,30 @@ if str(modulos_dir) not in sys.path:
 # levanta ValueError mesmo com os secrets preenchidos no Streamlit Cloud.
 
 
-# def secret(*nomes):
-#     """Primeiro secret existente entre os nomes aceitos."""
-#     for nome in nomes:
-#         try:
-#             if nome in st.secrets:
-#                 return st.secrets[nome]
-#         except Exception:
-#             pass
-#     return None
+def secret(*nomes):
+    """Primeiro secret existente entre os nomes aceitos."""
+    for nome in nomes:
+        try:
+            if nome in st.secrets:
+                return st.secrets[nome]
+        except Exception:
+            pass
+    return None
 
 
-# SUPABASE_URL = secret("SUPABASE_URL", "supabase_url")
-# SUPABASE_KEY = secret(
-#     "SUPABASE_KEY",
-#     "SUPABASE_ANON_KEY",
-#     "SUPABASE_SERVICE_KEY",
-#     "SUPABASE_SERVICE_ROLE_KEY",
-#     "supabase_key",
-# )
+SUPABASE_URL = secret("SUPABASE_URL", "supabase_url")
+SUPABASE_KEY = secret(
+    "SUPABASE_KEY",
+    "SUPABASE_ANON_KEY",
+    "SUPABASE_SERVICE_KEY",
+    "SUPABASE_SERVICE_ROLE_KEY",
+    "supabase_key",
+)
 
-# if SUPABASE_URL:
-#     os.environ["SUPABASE_URL"] = str(SUPABASE_URL)
-# if SUPABASE_KEY:
-#     os.environ["SUPABASE_KEY"] = str(SUPABASE_KEY)
+if SUPABASE_URL:
+    os.environ["SUPABASE_URL"] = str(SUPABASE_URL)
+if SUPABASE_KEY:
+    os.environ["SUPABASE_KEY"] = str(SUPABASE_KEY)
 
 
 import Modulos.Minio.examples.MinIO as meu_minio
