@@ -45,30 +45,44 @@ if str(modulos_dir) not in sys.path:
 # levanta ValueError mesmo com os secrets preenchidos no Streamlit Cloud.
 
 
-# def secret(*nomes):
-#     """Primeiro secret existente entre os nomes aceitos."""
-#     for nome in nomes:
-#         try:
-#             if nome in st.secrets:
-#                 return st.secrets[nome]
-#         except Exception:
-#             pass
-#     return None
+def secret(*nomes):
+    """Primeiro secret existente entre os nomes aceitos."""
+    for nome in nomes:
+        try:
+            if nome in st.secrets:
+                return st.secrets[nome]
+        except Exception:
+            pass
+    return None
 
 
-# SUPABASE_URL = secret("SUPABASE_URL", "supabase_url")
-# SUPABASE_KEY = secret(
-#     "SUPABASE_KEY",
-#     "SUPABASE_ANON_KEY",
-#     "SUPABASE_SERVICE_KEY",
-#     "SUPABASE_SERVICE_ROLE_KEY",
-#     "supabase_key",
-# )
+def credenciais_supabase():
+    """(url, key) lidos na hora da chamada — secrets primeiro, ambiente depois.
 
-# if SUPABASE_URL:
-#     os.environ["SUPABASE_URL"] = str(SUPABASE_URL)
-# if SUPABASE_KEY:
-#     os.environ["SUPABASE_KEY"] = str(SUPABASE_KEY)
+    Quem precisa da informação chama esta função em vez de depender de uma
+    global definida 400 linhas acima.
+    """
+    url = secret("SUPABASE_URL", "supabase_url") or os.getenv("SUPABASE_URL")
+    key = (
+        secret(
+            "SUPABASE_KEY",
+            "SUPABASE_ANON_KEY",
+            "SUPABASE_SERVICE_KEY",
+            "SUPABASE_SERVICE_ROLE_KEY",
+            "supabase_key",
+        )
+        or os.getenv("SUPABASE_KEY")
+    )
+    return url, key
+
+
+# Publica no ambiente ANTES do import de Modulos — é a única janela em que
+# ConectionSupaBase consegue ler.
+SUPABASE_URL, SUPABASE_KEY = credenciais_supabase()
+if SUPABASE_URL:
+    os.environ["SUPABASE_URL"] = str(SUPABASE_URL)
+if SUPABASE_KEY:
+    os.environ["SUPABASE_KEY"] = str(SUPABASE_KEY)
 
 
 import Modulos.Minio.examples.MinIO as meu_minio
@@ -503,7 +517,8 @@ def tela_menu() -> None:
     st.markdown("### Painel de Sustentabilidade")
     st.caption(f"Bem-vindo(a), {user_name} — {usuario_email_logado}")
 
-    if not SUPABASE_URL or not SUPABASE_KEY:
+    url_sb, key_sb = credenciais_supabase()
+    if not url_sb or not key_sb:
         st.error(
             "SUPABASE_URL e/ou SUPABASE_KEY não encontrados em st.secrets — "
             "nenhuma tela vai gravar."
