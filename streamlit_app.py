@@ -45,30 +45,30 @@ if str(modulos_dir) not in sys.path:
 # levanta ValueError mesmo com os secrets preenchidos no Streamlit Cloud.
 
 
-def secret(*nomes):
-    """Primeiro secret existente entre os nomes aceitos."""
-    for nome in nomes:
-        try:
-            if nome in st.secrets:
-                return st.secrets[nome]
-        except Exception:
-            pass
-    return None
+# def secret(*nomes):
+#     """Primeiro secret existente entre os nomes aceitos."""
+#     for nome in nomes:
+#         try:
+#             if nome in st.secrets:
+#                 return st.secrets[nome]
+#         except Exception:
+#             pass
+#     return None
 
 
-SUPABASE_URL = secret("SUPABASE_URL", "supabase_url")
-SUPABASE_KEY = secret(
-    "SUPABASE_KEY",
-    "SUPABASE_ANON_KEY",
-    "SUPABASE_SERVICE_KEY",
-    "SUPABASE_SERVICE_ROLE_KEY",
-    "supabase_key",
-)
+# SUPABASE_URL = secret("SUPABASE_URL", "supabase_url")
+# SUPABASE_KEY = secret(
+#     "SUPABASE_KEY",
+#     "SUPABASE_ANON_KEY",
+#     "SUPABASE_SERVICE_KEY",
+#     "SUPABASE_SERVICE_ROLE_KEY",
+#     "supabase_key",
+# )
 
-if SUPABASE_URL:
-    os.environ["SUPABASE_URL"] = str(SUPABASE_URL)
-if SUPABASE_KEY:
-    os.environ["SUPABASE_KEY"] = str(SUPABASE_KEY)
+# if SUPABASE_URL:
+#     os.environ["SUPABASE_URL"] = str(SUPABASE_URL)
+# if SUPABASE_KEY:
+#     os.environ["SUPABASE_KEY"] = str(SUPABASE_KEY)
 
 
 import Modulos.Minio.examples.MinIO as meu_minio
@@ -290,13 +290,29 @@ def json_seguro(dados: dict) -> dict:
 
 
 def inserir(tabela_app: str, dados: dict):
-    """Grava no Supabase. Devolve (ok, mensagem)."""
+    """Grava no Supabase. Devolve (ok, mensagem, linha_criada).
+
+    A linha é necessária para nomear o objeto no MinIO com o id do registro.
+    """
     try:
         cliente = conectar_supabase()
-        cliente.table(TABELAS_DB[tabela_app]).insert(json_seguro(dados)).execute()
-        return True, "Registro gravado no Supabase."
+        resposta = (
+            cliente.table(TABELAS_DB[tabela_app]).insert(json_seguro(dados)).execute()
+        )
+        linha = (resposta.data or [{}])[0]
+        return True, "Registro gravado no Supabase.", linha
     except Exception as erro:
-        return False, f"Não gravou: {erro}"
+        return False, f"Não gravou: {erro}", {}
+
+
+def remover(tabela_app: str, id_registro) -> bool:
+    """Desfaz um insert. Exige política de DELETE na RLS."""
+    try:
+        cliente = conectar_supabase()
+        cliente.table(TABELAS_DB[tabela_app]).delete().eq("id", id_registro).execute()
+        return True
+    except Exception:
+        return False
 
 
 def listar_registros(tabela_app: str, limite: int = 50) -> pd.DataFrame:
@@ -327,10 +343,38 @@ def mostrar_registros(tabela_app: str) -> None:
         st.dataframe(df, hide_index=True)
 
 
-def concluir(chave_msg: str, tabela_app: str, dados: dict, campos: tuple, apos_ok=None) -> None:
-    """Grava e só limpa os campos se o insert passou — falha não apaga o que
-    foi digitado."""
-    ok, msg = inserir(tabela_app, dados)
+def concluir(
+    chave_msg: str,
+    tabela_app: str,
+    dados: dict,
+    campos: tuple,
+    apos_ok=None,
+    apos_insert=None,
+) -> None:
+    """Grava e só limpa os campos se tudo passou — falha não apaga o que foi
+    digitado.
+
+    apos_insert recebe a linha criada e roda ainda dentro do "salvamento": se
+    levantar exceção (ex.: upload da evidência falhou), o insert é desfeito,
+    para não sobrar registro sem anexo.
+    """
+    ok, msg, linha = inserir(tabela_app, dados)
+
+    if ok and apos_insert is not None:
+        try:
+            msg = apos_insert(linha) or msg
+        except Exception as erro:
+            ok = False
+            id_registro = linha.get("id")
+            if remover(tabela_app, id_registro):
+                msg = f"Nada foi salvo — falha na evidência: {erro}"
+            else:
+                msg = (
+                    f"ATENÇÃO: o registro id={id_registro} ficou gravado SEM "
+                    f"evidência e não foi possível desfazer (falta política de "
+                    f"DELETE na RLS?). Exclua na mão. Falha original: {erro}"
+                )
+
     st.session_state[chave_msg] = ("success" if ok else "error", msg)
     if not ok:
         return
@@ -358,6 +402,48 @@ def fmt_brl(valor: float) -> str:
 
 def txt(chave: str) -> str:
     return str(st.session_state.get(chave, "")).strip()
+
+
+# ================================================
+# MINIO — EVIDÊNCIAS
+# ================================================
+# Bucket seguindo o padrão dos que já existem (minúsculo com hífen).
+# create_bucket_if_not_exists() cria no primeiro upload.
+BUCKET_LICENCAS = "sustentabilidade-licencas"
+
+
+def subir_evidencia(id_registro, arquivo, sequencia: int = 1) -> str:
+    """Sobe o anexo e devolve o nome do objeto.
+
+    Nome no padrão <id>_<n>.<ext>, que é o que Modulos.Minio listar_anexos()
+    procura (prefixo "<id>_") — assim o vínculo licença↔arquivo não precisa de
+    coluna no Supabase.
+
+    Usa put_object com os bytes em memória em vez de meu_minio.upload(), que
+    exige arquivo em disco (fput_object) — no Streamlit Cloud o disco é
+    efêmero e o UploadedFile já está na memória.
+    """
+    manager = getattr(meu_minio, "manager", None)
+    if manager is None:
+        raise RuntimeError(
+            "MinIO indisponível — o módulo abre a conexão no import e ela "
+            "falhou. Confira MINIO_ENDPOINT/ACCESS_KEY/SECRET_KEY/SECURE nos "
+            "secrets e reinicie o app (o manager não se reconecta sozinho)."
+        )
+
+    extensao = Path(arquivo.name).suffix.lower() or ".bin"
+    objeto = f"{id_registro}_{sequencia}{extensao}"
+    conteudo = arquivo.getvalue()
+
+    manager.create_bucket_if_not_exists(BUCKET_LICENCAS)
+    manager.client.put_object(
+        BUCKET_LICENCAS,
+        objeto,
+        io.BytesIO(conteudo),
+        length=len(conteudo),
+        content_type=arquivo.type or "application/octet-stream",
+    )
+    return objeto
 
 
 # ================================================
@@ -567,13 +653,27 @@ def salvar_licenca() -> None:
         "USUARIO": usuario_email_logado,
     }
 
+    def subir(linha: dict) -> str:
+        id_registro = linha.get("id")
+        if id_registro is None:
+            raise RuntimeError(
+                "o insert não devolveu o id (RLS sem política de SELECT?) e "
+                "sem id não há como nomear o objeto"
+            )
+        objeto = subir_evidencia(id_registro, arquivo)
+        return f"Licença {id_registro} salva · evidência em {BUCKET_LICENCAS}/{objeto}"
+
     def limpar_upload() -> None:
         st.session_state["lic_upload_n"] += 1
 
-    st.session_state.setdefault("arquivos_licenca", []).append(
-        {"nome": arquivo.name, "tipo": arquivo.type, "bytes": arquivo.getvalue()}
+    concluir(
+        "msg_licencas",
+        "licencas",
+        dados,
+        CAMPOS_LICENCA,
+        apos_ok=limpar_upload,
+        apos_insert=subir,
     )
-    concluir("msg_licencas", "licencas", dados, CAMPOS_LICENCA, apos_ok=limpar_upload)
 
 
 def tela_licencas() -> None:
@@ -616,9 +716,8 @@ def tela_licencas() -> None:
 
     render_msg("msg_licencas")
     st.caption(
-        "⚠️ O arquivo continua só na sessão: a tabela não tem coluna de "
-        "evidência nem existe bucket no Storage. DIAS PRÉ VENCIMENTO também "
-        "não é gravado por falta de coluna."
+        f"O anexo vai para o MinIO em `{BUCKET_LICENCAS}/<id>_1.<ext>`. "
+        "DIAS PRÉ VENCIMENTO continua sem ser gravado — a tabela não tem a coluna."
     )
     mostrar_registros("licencas")
 
