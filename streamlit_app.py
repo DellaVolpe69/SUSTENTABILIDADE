@@ -281,6 +281,7 @@ TABELAS_DB = {
 COL_SOLIDOS = "SOLIDOS_CONTAMINADOS"
 COL_OLEO = "OLEO_LUBRIFICANTE"
 COL_DT_VENCIMENTO = "DT_VENCIMENTO"
+COL_DIAS = "DIAS"  # dias pré-vencimento
 COL_DATA_PAGAMENTO = "DATA_PAGAMENTO"
 
 
@@ -654,14 +655,15 @@ def salvar_licenca() -> None:
         st.session_state["msg_licencas"] = ("warning", "Obrigatório: " + ", ".join(faltando))
         return
 
-    # DIAS_PRE_VENCIMENTO e a evidência não têm coluna na tabela ainda,
-    # por isso ficam fora do payload (ver observação).
+    # A evidência não vai no payload: o vínculo é o nome do objeto no MinIO
+    # (<id>_<n>.<ext>), que listar_anexos() encontra pelo prefixo.
     dados = {
         "FILIAL": txt("lic_filial").upper(),
         "ROTA": int(st.session_state.get("lic_rota", 0)),
         "CNPJ": txt("lic_cnpj"),
         "LICENCA": txt("lic_licenca"),
         COL_DT_VENCIMENTO: st.session_state.get("lic_dt_venc", date.today()),
+        COL_DIAS: int(st.session_state.get("lic_dias_pre", 0)),
         "STATUS": txt("lic_status"),
         "OBSERVACAO": txt("lic_obs"),
         "CATEGORIA": st.session_state.get("lic_categoria", CATEGORIAS_LICENCA[0]),
@@ -730,10 +732,6 @@ def tela_licencas() -> None:
         st.caption("Anexe a Licença para liberar o Salvar.")
 
     render_msg("msg_licencas")
-    st.caption(
-        f"O anexo vai para o MinIO em `{BUCKET_LICENCAS}/<id>_1.<ext>`. "
-        "DIAS PRÉ VENCIMENTO continua sem ser gravado — a tabela não tem a coluna."
-    )
     mostrar_registros("licencas")
 
 
