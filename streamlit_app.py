@@ -382,47 +382,126 @@ def tela_consumos() -> None:
 # ================================================
 # 2) CONTROLE DE LICENÇAS
 # ================================================
+# Esta tela NÃO usa st.form por causa da evidência obrigatória: dentro de um
+# form o botão não consegue reagir ao anexo (só há rerun no submit), e o
+# clear_on_submit apagaria os 9 campos digitados sempre que a validação
+# barrasse o registro. Com widgets soltos + callback, o Salvar só habilita
+# depois do anexo e nada é perdido quando a validação reprova.
+
 CATEGORIAS_LICENCA = ["LICENCA", "AMBIENTAL"]
+TIPOS_EVIDENCIA = ["png", "jpg", "jpeg", "pdf"]
+CAMPOS_LICENCA = (
+    "lic_filial",
+    "lic_rota",
+    "lic_cnpj",
+    "lic_licenca",
+    "lic_dt_venc",
+    "lic_dias_pre",
+    "lic_status",
+    "lic_obs",
+    "lic_categoria",
+)
+
+# O file_uploader não zera ao apagar a key; troca-se a própria key por uma
+# nova (contador) para o widget nascer vazio no próximo registro.
+st.session_state.setdefault("lic_upload_n", 0)
+
+
+def chave_evidencia() -> str:
+    return f"lic_evidencia_{st.session_state['lic_upload_n']}"
+
+
+def salvar_licenca() -> None:
+    """Callback do botão Salvar; roda antes do rerun, então pode limpar os campos."""
+    filial = str(st.session_state.get("lic_filial", "")).strip()
+    arquivo = st.session_state.get(chave_evidencia())
+
+    faltando = []
+    if not filial:
+        faltando.append("FILIAL")
+    if arquivo is None:
+        faltando.append("Licença (evidência)")
+    if faltando:
+        st.session_state["lic_msg"] = ("warning", "Obrigatório: " + ", ".join(faltando))
+        return
+
+    salvar_registro(
+        "licencas",
+        {
+            "FILIAL": filial.upper(),
+            "ROTA": int(st.session_state.get("lic_rota", 0)),
+            "CNPJ": str(st.session_state.get("lic_cnpj", "")).strip(),
+            "LICENCA": str(st.session_state.get("lic_licenca", "")).strip(),
+            "DT_VENCIMENTO": st.session_state.get("lic_dt_venc", date.today()),
+            "DIAS_PRE_VENCIMENTO": int(st.session_state.get("lic_dias_pre", 0)),
+            "STATUS": str(st.session_state.get("lic_status", "")).strip(),
+            "OBSERVACAO": str(st.session_state.get("lic_obs", "")).strip(),
+            "CATEGORIA": st.session_state.get("lic_categoria", CATEGORIAS_LICENCA[0]),
+            "EVIDENCIA": arquivo.name,
+            "EVIDENCIA_TIPO": arquivo.type,
+            "EVIDENCIA_KB": round(arquivo.size / 1024, 1),
+        },
+    )
+
+    # O binário fica fora da tabela exibida; amanhã sobe para o Storage.
+    st.session_state.setdefault("arquivos_licenca", []).append(
+        {"nome": arquivo.name, "tipo": arquivo.type, "bytes": arquivo.getvalue()}
+    )
+
+    for campo in CAMPOS_LICENCA:
+        st.session_state.pop(campo, None)
+    st.session_state["lic_upload_n"] += 1
+    st.session_state["lic_msg"] = ("success", "Registro salvo na sessão (Supabase pendente).")
 
 
 def tela_licencas() -> None:
     cabecalho_tela("licencas")
 
-    with st.form("form_licencas", clear_on_submit=True):
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            filial = st.text_input("FILIAL")
-            licenca = st.text_input("LICENÇA")
-            status = st.text_input("STATUS")
-        with c2:
-            rota = st.number_input("ROTA", min_value=0, step=1, format="%d")
-            dt_vencimento = st.date_input("DT VENCIMENTO", value=date.today(), format="DD/MM/YYYY")
-            categoria = st.selectbox("CATEGORIA", CATEGORIAS_LICENCA)
-        with c3:
-            cnpj = st.text_input("CNPJ")
-            dias_pre = st.number_input("DIAS PRÉ VENCIMENTO", min_value=0, step=1, format="%d")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.text_input("FILIAL", key="lic_filial")
+        st.text_input("LICENÇA", key="lic_licenca")
+        st.text_input("STATUS", key="lic_status")
+    with c2:
+        st.number_input("ROTA", min_value=0, step=1, format="%d", key="lic_rota")
+        st.date_input("DT VENCIMENTO", value=date.today(), format="DD/MM/YYYY", key="lic_dt_venc")
+        st.selectbox("CATEGORIA", CATEGORIAS_LICENCA, key="lic_categoria")
+    with c3:
+        st.text_input("CNPJ", key="lic_cnpj")
+        st.number_input("DIAS PRÉ VENCIMENTO", min_value=0, step=1, format="%d", key="lic_dias_pre")
 
-        observacao = st.text_area("OBSERVAÇÃO")
+    st.text_area("OBSERVAÇÃO", key="lic_obs")
 
-        if st.form_submit_button("💾 Salvar"):
-            if not filial.strip():
-                st.warning("Informe a FILIAL.")
+    st.markdown("**Evidência (obrigatória)**")
+    esq, dir_ = st.columns([2, 1])
+    with esq:
+        arquivo = st.file_uploader(
+            "Licença",
+            type=TIPOS_EVIDENCIA,
+            key=chave_evidencia(),
+            help="Imagem ou PDF da licença. Sem o anexo o registro não é salvo.",
+        )
+    with dir_:
+        if arquivo is not None:
+            if str(arquivo.type).startswith("image/"):
+                st.image(arquivo, caption=arquivo.name, width=200)
             else:
-                salvar_registro(
-                    "licencas",
-                    {
-                        "FILIAL": filial.strip().upper(),
-                        "ROTA": int(rota),
-                        "CNPJ": cnpj.strip(),
-                        "LICENCA": licenca.strip(),
-                        "DT_VENCIMENTO": dt_vencimento,
-                        "DIAS_PRE_VENCIMENTO": int(dias_pre),
-                        "STATUS": status.strip(),
-                        "OBSERVACAO": observacao.strip(),
-                        "CATEGORIA": categoria,
-                    },
-                )
-                st.success("Registro salvo na sessão (Supabase pendente).")
+                st.success(f"📎 {arquivo.name} · {arquivo.size / 1024:,.1f} KB")
+
+    st.button(
+        "💾 Salvar",
+        key="btn_salvar_lic",
+        on_click=salvar_licenca,
+        disabled=arquivo is None,
+    )
+    if arquivo is None:
+        st.caption("Anexe a Licença para liberar o Salvar.")
+
+    tipo_msg, texto_msg = st.session_state.pop("lic_msg", (None, None))
+    if tipo_msg == "success":
+        st.success(texto_msg)
+    elif tipo_msg == "warning":
+        st.warning(texto_msg)
 
     mostrar_registros("licencas")
 
