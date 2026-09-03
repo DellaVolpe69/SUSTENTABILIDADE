@@ -687,7 +687,7 @@ def salvar_licenca() -> None:
     # (<id>_<n>.<ext>), que listar_anexos() encontra pelo prefixo.
     dados = {
         "FILIAL": txt("lic_filial").upper(),
-        "ROTA": int(st.session_state.get("lic_rota", 0)),
+        "ROTA": txt("lic_rota"),  # coluna text no banco
         "CNPJ": txt("lic_cnpj"),
         "LICENCA": txt("lic_licenca"),
         COL_DT_VENCIMENTO: st.session_state.get("lic_dt_venc", date.today()),
@@ -728,7 +728,7 @@ def form_licencas() -> None:
         st.text_input("LICENÇA", key="lic_licenca")
         st.selectbox("STATUS", OPCOES_STATUS, key="lic_status")
     with c2:
-        st.number_input("ROTA", min_value=0, step=1, format="%d", key="lic_rota")
+        st.text_input("ROTA", key="lic_rota")
         st.date_input("DT VENCIMENTO", value=date.today(), format="DD/MM/YYYY", key="lic_dt_venc")
         st.selectbox("CATEGORIA", CATEGORIAS_LICENCA, key="lic_categoria")
     with c3:
@@ -938,7 +938,7 @@ CAMPOS_EDICAO = {
         campo("FILIAL", "texto"),
         campo("LICENCA", "texto", "LICENÇA"),
         campo("CNPJ", "texto"),
-        campo("ROTA", "inteiro"),
+        campo("ROTA", "texto"),
         campo(COL_DT_VENCIMENTO, "data", "DT VENCIMENTO"),
         campo(COL_DIAS, "inteiro", "DIAS PRÉ VENCIMENTO"),
         campo("STATUS", "opcoes", opcoes=OPCOES_STATUS),
@@ -978,18 +978,49 @@ RESUMO_REGISTRO = {
 AJUSTES_EDICAO = {"reciclaveis": recalcular_total_reciclavel}
 
 
+def para_int(valor, padrao=0) -> int:
+    """Nunca levanta: coluna text pode guardar qualquer coisa.
+
+    ROTA virou text no banco, então um "12A" ou "S/ROTA" chegaria aqui e
+    um int() cru derrubava a tela inteira por causa de uma linha.
+    """
+    try:
+        return int(float(str(valor).strip().replace(",", ".")))
+    except (TypeError, ValueError):
+        return padrao
+
+
+def para_float(valor, padrao=0.0) -> float:
+    try:
+        return float(str(valor).strip().replace(",", "."))
+    except (TypeError, ValueError):
+        return padrao
+
+
 def para_data(valor):
-    """Aceita date, datetime ou o texto ISO que o PostgREST devolve."""
+    """date, datetime, texto ISO ou dd/mm/aaaa. Devolve None se não der.
+
+    DT_VENCIMENTO e DATA_PAGAMENTO são text no banco, então o formato não é
+    garantido. Devolver None deixa o campo vazio em vez de mostrar a data de
+    hoje, que pareceria um valor real e seria gravado como se fosse.
+    """
     if isinstance(valor, datetime):
         return valor.date()
     if isinstance(valor, date):
         return valor
-    if valor:
+    if not valor:
+        return None
+    texto = str(valor).strip()
+    try:
+        return date.fromisoformat(texto[:10])
+    except ValueError:
+        pass
+    for formato in ("%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d"):
         try:
-            return date.fromisoformat(str(valor)[:10])
+            return datetime.strptime(texto[:10], formato).date()
         except ValueError:
-            pass
-    return date.today()
+            continue
+    return None
 
 
 def desenha_campo(spec: dict, registro: dict, prefixo: str):
@@ -1006,7 +1037,7 @@ def desenha_campo(spec: dict, registro: dict, prefixo: str):
         return int(
             st.number_input(
                 label,
-                value=int(atual or 0),
+                value=para_int(atual),
                 min_value=spec.get("minimo", 0),
                 max_value=spec.get("maximo", 2_000_000_000),
                 step=1,
@@ -1018,7 +1049,7 @@ def desenha_campo(spec: dict, registro: dict, prefixo: str):
         return float(
             st.number_input(
                 label,
-                value=float(atual or 0.0),
+                value=para_float(atual),
                 min_value=0.0,
                 step=0.01,
                 format="%.2f",
@@ -1026,7 +1057,8 @@ def desenha_campo(spec: dict, registro: dict, prefixo: str):
             )
         )
     if tipo == "mes":
-        indice = int(atual) - 1 if atual and 1 <= int(atual) <= 12 else 0
+        numero_mes = para_int(atual)
+        indice = numero_mes - 1 if 1 <= numero_mes <= 12 else 0
         return MESES.index(st.selectbox(label, MESES, index=indice, key=chave)) + 1
     if tipo == "opcoes":
         opcoes = spec["opcoes"]
