@@ -342,22 +342,6 @@ def listar_registros(tabela_app: str, limite: int = 50) -> pd.DataFrame:
     return pd.DataFrame(resposta.data or [])
 
 
-def mostrar_registros(tabela_app: str) -> None:
-    st.markdown("#### Últimos registros")
-    try:
-        df = listar_registros(tabela_app)
-    except Exception as erro:
-        st.error(f"Não foi possível ler {TABELAS_DB[tabela_app]}: {erro}")
-        return
-    if df.empty:
-        st.caption(
-            "Nenhum registro. Se você acabou de gravar e nada aparece, "
-            "é a RLS sem política de SELECT."
-        )
-    else:
-        st.dataframe(df, hide_index=True)
-
-
 def concluir(
     chave_msg: str,
     tabela_app: str,
@@ -459,6 +443,263 @@ def subir_evidencia(id_registro, arquivo, sequencia: int = 1) -> str:
         content_type=arquivo.type or "application/octet-stream",
     )
     return objeto
+
+
+def excluir_evidencias(id_registro) -> int:
+    """Remove do bucket os anexos <id>_* e devolve quantos saíram.
+
+    Sem isso, excluir a licença deixa o arquivo órfão no MinIO: ninguém mais
+    chega nele, porque o vínculo era justamente o id.
+    """
+    manager = getattr(meu_minio, "manager", None)
+    if manager is None:
+        raise RuntimeError("MinIO indisponível — nenhum anexo foi apagado")
+
+    removidos = 0
+    for obj in manager.client.list_objects(
+        BUCKET_LICENCAS, prefix=f"{id_registro}_", recursive=True
+    ):
+        manager.client.remove_object(BUCKET_LICENCAS, obj.object_name)
+        removidos += 1
+    return removidos
+
+
+
+
+# ================================================
+# CRUD — GRADE EDITÁVEL
+# ================================================
+# Uma implementação serve as 4 telas: st.data_editor devolve o que mudou em
+# st.session_state[chave] como {"edited_rows", "deleted_rows", "added_rows"},
+# e aqui isso é traduzido em update/delete no Supabase.
+#
+# Inclusão NÃO passa pela grade: cada tela tem regra própria (FILIAL
+# obrigatória, evidência obrigatória na licença) e uma linha digitada direto
+# no grid fura essas validações. Linhas adicionadas na grade são recusadas
+# com aviso, e o formulário acima segue sendo o único caminho de criação.
+
+BLOQUEADAS_PADRAO = ("id", "DATA_CRIACAO", "USUARIO")
+
+
+def atualizar(tabela_app: str, id_registro, mudancas: dict) -> None:
+    cliente = conectar_supabase()
+    cliente.table(TABELAS_DB[tabela_app]).update(json_seguro(mudancas)).eq(
+        "id", id_registro
+    ).execute()
+
+
+def excluir(tabela_app: str, id_registro) -> None:
+    cliente = conectar_supabase()
+    cliente.table(TABELAS_DB[tabela_app]).delete().eq("id", id_registro).execute()
+
+
+def estado_editor(chave: str) -> dict:
+    """Normaliza o estado do data_editor para um dict simples."""
+    bruto = st.session_state.get(chave)
+    if bruto is None:
+        return {}
+    if isinstance(bruto, dict):
+        return bruto
+    return {
+        "edited_rows": getattr(bruto, "edited_rows", {}) or {},
+        "deleted_rows": getattr(bruto, "deleted_rows", []) or [],
+        "added_rows": getattr(bruto, "added_rows", []) or [],
+    }
+
+
+def aplicar_edicoes(
+    tabela_app: str,
+    chave_editor: str,
+    chave_msg: str,
+    chave_versao: str,
+    ids: list,
+    ajustar=None,
+    ao_excluir=None,
+) -> None:
+    """Callback do botão Aplicar: manda para o banco o que foi mexido na grade.
+
+    ids é a lista de ids na ordem em que as linhas foram exibidas — é assim
+    que o índice devolvido pelo data_editor volta a ser um registro.
+    """
+    estado = estado_editor(chave_editor)
+    editadas = estado.get("edited_rows") or {}
+    excluidas = estado.get("deleted_rows") or []
+    adicionadas = estado.get("added_rows") or []
+
+    if not editadas and not excluidas and not adicionadas:
+        st.session_state[chave_msg] = ("warning", "Nada foi alterado na grade.")
+        return
+
+    alterados, removidos, arquivos, erros = 0, 0, 0, []
+
+    # --- UPDATE ---
+    for indice, mudancas in editadas.items():
+        try:
+            id_registro = ids[int(indice)]
+        except (ValueError, IndexError):
+            erros.append(f"linha {indice}: fora da lista exibida")
+            continue
+        mudancas = {c: v for c, v in mudancas.items() if c != "id"}
+        if not mudancas:
+            continue
+        if ajustar is not None:
+            mudancas = ajustar(id_registro, mudancas)
+        try:
+            atualizar(tabela_app, id_registro, mudancas)
+            alterados += 1
+        except Exception as erro:
+            erros.append(f"id {id_registro}: {erro}")
+
+    # --- DELETE ---
+    for indice in excluidas:
+        try:
+            id_registro = ids[int(indice)]
+        except (ValueError, IndexError):
+            erros.append(f"linha {indice}: fora da lista exibida")
+            continue
+        try:
+            excluir(tabela_app, id_registro)
+            removidos += 1
+        except Exception as erro:
+            erros.append(f"id {id_registro}: {erro}")
+            continue
+        # anexos só saem depois que a linha some, para não perder o arquivo
+        # de um registro que continuou no banco
+        if ao_excluir is not None:
+            try:
+                arquivos += ao_excluir(id_registro)
+            except Exception as erro:
+                erros.append(f"id {id_registro}: linha excluída, mas o anexo ficou ({erro})")
+
+    partes = []
+    if alterados:
+        partes.append(f"{alterados} alterado(s)")
+    if removidos:
+        partes.append(f"{removidos} excluído(s)")
+    if arquivos:
+        partes.append(f"{arquivos} anexo(s) removido(s) do MinIO")
+    if adicionadas:
+        partes.append(
+            f"{len(adicionadas)} linha(s) nova(s) IGNORADA(s) — use o formulário acima, "
+            "onde as obrigatoriedades são checadas"
+        )
+
+    if erros:
+        st.session_state[chave_msg] = (
+            "error",
+            (", ".join(partes) + " | " if partes else "") + "falhas: " + "; ".join(erros),
+        )
+    else:
+        st.session_state[chave_msg] = ("success", ", ".join(partes) + ".")
+
+    # grade nova: descarta o diff já aplicado e recarrega do banco
+    st.session_state[chave_versao] = st.session_state.get(chave_versao, 0) + 1
+
+
+def tabela_editavel(
+    tabela_app: str,
+    colunas_config: dict = None,
+    bloqueadas: tuple = (),
+    colunas_data: tuple = (),
+    ajustar=None,
+    ao_excluir=None,
+    limite: int = 200,
+) -> None:
+    """Read + Update + Delete da tabela, em grade."""
+    st.markdown("#### Registros")
+
+    chave_versao = f"ver_{tabela_app}"
+    versao = st.session_state.setdefault(chave_versao, 0)
+    chave_editor = f"editor_{tabela_app}_{versao}"
+    chave_msg = f"msg_grade_{tabela_app}"
+
+    try:
+        df = listar_registros(tabela_app, limite)
+    except Exception as erro:
+        st.error(f"Não foi possível ler {TABELAS_DB[tabela_app]}: {erro}")
+        return
+
+    if df.empty:
+        st.caption(
+            "Nenhum registro. Se você acabou de gravar e nada aparece, "
+            "é a RLS sem política de SELECT."
+        )
+        return
+
+    if "id" not in df.columns:
+        st.warning("A consulta não trouxe a coluna id — sem ela não há como editar.")
+        st.dataframe(df, hide_index=True)
+        return
+
+    ids = df["id"].tolist()
+
+    # o PostgREST devolve date como texto ("2026-09-01"); sem converter, o
+    # DateColumn recebe string e não abre o calendário
+    for coluna in colunas_data:
+        if coluna in df.columns:
+            df[coluna] = pd.to_datetime(df[coluna], errors="coerce")
+
+    # filtra pelo que a tabela realmente tem: SUSTENTABILIDADE_CONSUMO, por
+    # exemplo, não tem USUARIO
+    bloqueio = [
+        c for c in list(BLOQUEADAS_PADRAO) + list(bloqueadas) if c in df.columns
+    ]
+    config = {c: v for c, v in (colunas_config or {}).items() if c in df.columns}
+
+    st.data_editor(
+        df,
+        key=chave_editor,
+        num_rows="dynamic",
+        hide_index=True,
+        disabled=bloqueio,
+        column_config=config,
+    )
+
+    esq, dir_ = st.columns([1, 3])
+    with esq:
+        st.button(
+            "✅ Aplicar alterações",
+            key=f"aplicar_{tabela_app}_{versao}",
+            on_click=aplicar_edicoes,
+            args=(tabela_app, chave_editor, chave_msg, chave_versao, ids),
+            kwargs={"ajustar": ajustar, "ao_excluir": ao_excluir},
+        )
+    with dir_:
+        st.caption(
+            f"Editar célula ou marcar linha e usar 🗑 para excluir — nada vai ao "
+            f"banco antes de Aplicar. Mostrando as {len(df)} mais recentes."
+        )
+
+    render_msg(chave_msg)
+
+def recalcular_total_reciclavel(id_registro, mudancas: dict) -> dict:
+    """TOTAL é derivado de PESO x VALOR_KG.
+
+    A coluna não é generated no banco, então editar PESO ou VALOR_KG na grade
+    deixaria o TOTAL antigo mentindo. Relê a linha para combinar o campo
+    editado com o que não foi tocado.
+    """
+    if not ({"PESO", "VALOR_KG"} & set(mudancas)):
+        return mudancas
+
+    cliente = conectar_supabase()
+    atual = (
+        cliente.table(TABELAS_DB["reciclaveis"])
+        .select("*")
+        .eq("id", id_registro)
+        .limit(1)
+        .execute()
+        .data
+        or [{}]
+    )[0]
+
+    def valor(campo):
+        bruto = mudancas.get(campo, atual.get(campo))
+        return float(bruto or 0)
+
+    mudancas = dict(mudancas)
+    mudancas["TOTAL"] = round(valor("PESO") * valor("VALOR_KG"), 2)
+    return mudancas
 
 
 # ================================================
@@ -575,15 +816,11 @@ CAMPOS_CONSUMO = (
 )
 
 
-def competencia_consumo() -> date:
-    """ANO + MÊS escolhidos -> primeiro dia do mês.
-
-    A coluna DATA da tabela é date; guardar o dia 1 mantém o lançamento
-    ordenável e filtrável por período de verdade, sem coluna nova.
-    """
+def competencia_consumo():
+    """(ano, mes) escolhidos na tela — a tabela guarda os dois como inteiros."""
     ano = int(st.session_state.get("con_ano", date.today().year))
     nome_mes = st.session_state.get("con_mes", MESES[date.today().month - 1])
-    return date(ano, MESES.index(nome_mes) + 1, 1)
+    return ano, MESES.index(nome_mes) + 1
 
 
 def salvar_consumo() -> None:
@@ -591,9 +828,11 @@ def salvar_consumo() -> None:
         st.session_state["msg_consumos"] = ("warning", "Informe a FILIAL.")
         return
     # SUSTENTABILIDADE_CONSUMO não tem coluna USUARIO (ver observação).
+    ano, mes = competencia_consumo()
     dados = {
         "FILIAL": txt("con_filial").upper(),
-        "DATA": competencia_consumo(),
+        "ANO": ano,
+        "MES": mes,
         COL_SOLIDOS: st.session_state.get("con_solidos", 0.0),
         COL_OLEO: st.session_state.get("con_oleo", 0.0),
         "AGUA": st.session_state.get("con_agua", 0.0),
@@ -625,8 +864,6 @@ def tela_consumos() -> None:
     with c3:
         st.selectbox("MÊS", MESES, index=date.today().month - 1, key="con_mes")
 
-    st.caption(f"Competência gravada em DATA: {competencia_consumo():%d/%m/%Y}")
-
     st.markdown("**Volumes / consumos**")
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -643,7 +880,13 @@ def tela_consumos() -> None:
 
     st.button("💾 Salvar", key="btn_salvar_con", on_click=salvar_consumo)
     render_msg("msg_consumos")
-    mostrar_registros("consumos")
+    tabela_editavel(
+        "consumos",
+        colunas_config={
+            "MES": st.column_config.NumberColumn("MES", min_value=1, max_value=12, step=1),
+            "ANO": st.column_config.NumberColumn("ANO", min_value=1990, max_value=2100, step=1),
+        },
+    )
 
 
 # ================================================
@@ -762,7 +1005,21 @@ def tela_licencas() -> None:
         st.caption("Anexe a Licença para liberar o Salvar.")
 
     render_msg("msg_licencas")
-    mostrar_registros("licencas")
+    tabela_editavel(
+        "licencas",
+        colunas_config={
+            "CATEGORIA": st.column_config.SelectboxColumn(
+                "CATEGORIA", options=CATEGORIAS_LICENCA
+            ),
+            "STATUS": st.column_config.SelectboxColumn("STATUS", options=OPCOES_STATUS),
+            COL_DT_VENCIMENTO: st.column_config.DateColumn(
+                COL_DT_VENCIMENTO, format="DD/MM/YYYY"
+            ),
+            COL_DIAS: st.column_config.NumberColumn(COL_DIAS, min_value=0, step=1),
+        },
+        colunas_data=(COL_DT_VENCIMENTO,),
+        ao_excluir=excluir_evidencias,
+    )
 
 
 # ================================================
@@ -822,7 +1079,13 @@ def tela_custos() -> None:
 
     st.button("💾 Salvar", key="btn_salvar_cus", on_click=salvar_custo)
     render_msg("msg_custos")
-    mostrar_registros("custos")
+    tabela_editavel(
+        "custos",
+        colunas_config={
+            "MES": st.column_config.NumberColumn("MES", min_value=1, max_value=12, step=1),
+            "VALOR": st.column_config.NumberColumn("VALOR", min_value=0.0, format="%.2f"),
+        },
+    )
 
 
 # ================================================
@@ -878,7 +1141,21 @@ def tela_reciclaveis() -> None:
 
     st.button("💾 Salvar", key="btn_salvar_rec", on_click=salvar_reciclaveis)
     render_msg("msg_reciclaveis")
-    mostrar_registros("reciclaveis")
+    tabela_editavel(
+        "reciclaveis",
+        colunas_config={
+            "PAGAMENTO": st.column_config.SelectboxColumn(
+                "PAGAMENTO", options=OPCOES_PAGAMENTO
+            ),
+            "DATA": st.column_config.DateColumn("DATA", format="DD/MM/YYYY"),
+            "TOTAL": st.column_config.NumberColumn(
+                "TOTAL", format="%.2f", help="calculado: PESO x VALOR_KG"
+            ),
+        },
+        bloqueadas=("TOTAL",),
+        colunas_data=("DATA",),
+        ajustar=recalcular_total_reciclavel,
+    )
 
 
 # ================================================
