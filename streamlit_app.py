@@ -794,7 +794,7 @@ def salvar_custo() -> None:
         "MIGO": txt("cus_migo"),
         "NG": txt("cus_ng"),
         "VALOR": st.session_state.get("cus_valor", 0.0),
-        "MES": int(st.session_state.get("cus_mes", date.today().month)),
+        "MES": st.session_state.get("cus_mes", MESES[date.today().month - 1]),
         COL_DATA_PAGAMENTO: st.session_state.get("cus_dt_pag", date.today()),
         COL_BP: st.session_state.get("cus_bp", 0.0),
         "FIXO": txt("cus_fixo"),
@@ -813,10 +813,7 @@ def form_custos() -> None:
     with c2:
         st.text_input("FILIAL", key="cus_filial")
         st.text_input("MIGO", key="cus_migo")
-        st.number_input(
-            "MÊS", min_value=1, max_value=12, value=date.today().month, step=1,
-            format="%d", key="cus_mes",
-        )
+        st.selectbox("MÊS", MESES, index=date.today().month - 1, key="cus_mes")
     with c3:
         st.text_input("NOTA/BOLETO", key="cus_nota")
         st.text_input("NG", key="cus_ng")
@@ -973,7 +970,7 @@ CAMPOS_EDICAO = {
         campo("MIGO", "texto"),
         campo("NG", "texto"),
         campo("VALOR", "decimal"),
-        campo("MES", "mes", "MÊS"),
+        campo("MES", "mes_nome", "MÊS"),   # coluna text: guarda o nome
         campo(COL_DATA_PAGAMENTO, "data", "DATA PAGAMENTO"),
         campo(COL_BP, "decimal", "BP FORNECEDOR"),
         campo("FIXO", "texto"),
@@ -1018,6 +1015,23 @@ def para_float(valor, padrao=0.0) -> float:
         return float(str(valor).strip().replace(",", "."))
     except (TypeError, ValueError):
         return padrao
+
+
+def nome_mes(valor):
+    """Devolve o nome do mês a partir de número, texto numérico ou nome.
+
+    MES em SUSTENTABILIDADE_CUSTO é text: as linhas antigas guardam "9" e as
+    novas guardam "Setembro". Sem isso, uma linha antiga abriria em Janeiro
+    na tela de edição — errado e silencioso.
+    """
+    if valor in (None, ""):
+        return None
+    texto = str(valor).strip()
+    for existente in MESES:
+        if existente.lower() == texto.lower():
+            return existente
+    numero = para_int(texto, 0)
+    return MESES[numero - 1] if 1 <= numero <= 12 else None
 
 
 def para_data(valor):
@@ -1083,8 +1097,16 @@ def desenha_campo(spec: dict, registro: dict, prefixo: str):
         numero_mes = para_int(atual)
         indice = numero_mes - 1 if 1 <= numero_mes <= 12 else 0
         return MESES.index(st.selectbox(label, MESES, index=indice, key=chave)) + 1
+    if tipo == "mes_nome":
+        atual = nome_mes(atual)
+        indice = MESES.index(atual) if atual in MESES else date.today().month - 1
+        return st.selectbox(label, MESES, index=indice, key=chave)
     if tipo == "opcoes":
-        opcoes = spec["opcoes"]
+        opcoes = list(spec["opcoes"])
+        # valor fora da lista entra na lista: melhor exibir o que está no
+        # banco do que trocar por outro sem avisar
+        if atual not in (None, "") and atual not in opcoes:
+            opcoes = [atual] + opcoes
         indice = opcoes.index(atual) if atual in opcoes else 0
         return st.selectbox(label, opcoes, index=indice, key=chave)
     if tipo == "data":
