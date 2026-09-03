@@ -283,6 +283,7 @@ COL_OLEO = "OLEO_LUBRIFICANTE"
 COL_DT_VENCIMENTO = "DT_VENCIMENTO"
 COL_DIAS = "DIAS"  # dias pré-vencimento
 COL_DATA_PAGAMENTO = "DATA_PAGAMENTO"
+COL_BP = "BP FORNECEDOR"  # atenção: espaço no nome, não underscore
 
 
 @st.cache_resource(show_spinner=False)
@@ -773,7 +774,12 @@ CAMPOS_CUSTO = (
     "cus_valor",
     "cus_mes",
     "cus_dt_pag",
+    "cus_bp",
+    "cus_fixo",
+    "cus_setor",
 )
+
+OPCOES_SETOR = ["Sustentabilidade", "Qualidade"]
 
 
 def salvar_custo() -> None:
@@ -790,6 +796,9 @@ def salvar_custo() -> None:
         "VALOR": st.session_state.get("cus_valor", 0.0),
         "MES": int(st.session_state.get("cus_mes", date.today().month)),
         COL_DATA_PAGAMENTO: st.session_state.get("cus_dt_pag", date.today()),
+        COL_BP: st.session_state.get("cus_bp", 0.0),
+        "FIXO": txt("cus_fixo"),
+        "SETOR": st.session_state.get("cus_setor", OPCOES_SETOR[0]),
         "USUARIO": usuario_email_logado,
     }
     concluir("msg_custos", "custos", dados, CAMPOS_CUSTO)
@@ -812,6 +821,17 @@ def form_custos() -> None:
         st.text_input("NOTA/BOLETO", key="cus_nota")
         st.text_input("NG", key="cus_ng")
         st.date_input("DATA PAGAMENTO", value=date.today(), format="DD/MM/YYYY", key="cus_dt_pag")
+
+    c4, c5, c6 = st.columns(3)
+    with c4:
+        # coluna float8 no banco; step/format inteiros porque BP é identificador
+        st.number_input(
+            "BP FORNECEDOR", min_value=0.0, step=1.0, format="%.0f", key="cus_bp"
+        )
+    with c5:
+        st.text_input("FIXO", key="cus_fixo")
+    with c6:
+        st.selectbox("SETOR", OPCOES_SETOR, key="cus_setor")
 
     st.button("💾 Salvar", key="btn_salvar_cus", on_click=salvar_custo)
     render_msg("msg_custos")
@@ -955,6 +975,9 @@ CAMPOS_EDICAO = {
         campo("VALOR", "decimal"),
         campo("MES", "mes", "MÊS"),
         campo(COL_DATA_PAGAMENTO, "data", "DATA PAGAMENTO"),
+        campo(COL_BP, "decimal", "BP FORNECEDOR"),
+        campo("FIXO", "texto"),
+        campo("SETOR", "opcoes", opcoes=OPCOES_SETOR),
     ],
     "reciclaveis": [
         campo("FILIAL", "texto"),
