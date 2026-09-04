@@ -287,6 +287,10 @@ COL_DIAS = "DIAS"  # dias pré-vencimento
 COL_DATA_PAGAMENTO = "DATA_PAGAMENTO"
 COL_BP = "BP FORNECEDOR"  # atenção: espaço no nome, não underscore
 
+# Quantos registros as telas carregam. 1000 é o teto padrão do PostgREST
+# no Supabase (db-max-rows): pedir mais não traz mais.
+LIMITE_REGISTROS = 1000
+
 
 @st.cache_resource(show_spinner=False)
 def conectar_supabase():
@@ -333,7 +337,7 @@ def remover(tabela_app: str, id_registro) -> bool:
         return False
 
 
-def listar_registros(tabela_app: str, limite: int = 50) -> pd.DataFrame:
+def listar_registros(tabela_app: str, limite: int = LIMITE_REGISTROS) -> pd.DataFrame:
     """Lista os registros que o usuário logado pode ver.
 
     Admin vê tudo; os demais recebem um filtro por FILIAL. Todas as quatro
@@ -1369,7 +1373,7 @@ def rotulo_registro(tabela_app: str, linha: dict) -> str:
     return f"#{linha.get('id')} · " + " · ".join(partes) if partes else f"#{linha.get('id')}"
 
 
-def painel_edicao(tabela_app: str, limite: int = 200) -> None:
+def painel_edicao(tabela_app: str, limite: int = LIMITE_REGISTROS) -> None:
     """Aba de edição: lista, escolhe um registro, edita ou exclui."""
     chave_versao = f"ver_{tabela_app}"
     versao = st.session_state.setdefault(chave_versao, 0)
