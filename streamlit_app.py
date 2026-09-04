@@ -249,9 +249,11 @@ user_email = (
     or "desconhecido"
 )
 
-# Validação de acesso — apenas e-mails explicitamente autorizados
-if not isinstance(user_email, str) or user_email.strip().lower() not in USUARIOS_AUTORIZADOS:
-    st.error("Acesso não autorizado. Entre em contato com o administrador do painel.")
+# A validação de acesso ficou mais abaixo, na seção PERFIL DE ACESSO:
+# agora ela consulta SUSTENTABILIDADE_USUARIOS, e para isso o cliente do
+# Supabase precisa existir. Aqui só garantimos que há um e-mail.
+if not isinstance(user_email, str) or not user_email.strip():
+    st.error("Não foi possível identificar seu e-mail no Azure AD.")
     st.stop()
 
 # Salva no session_state
@@ -332,15 +334,168 @@ def remover(tabela_app: str, id_registro) -> bool:
 
 
 def listar_registros(tabela_app: str, limite: int = 50) -> pd.DataFrame:
+    """Lista os registros que o usuário logado pode ver.
+
+    Admin vê tudo; os demais recebem um filtro por FILIAL. Todas as quatro
+    tabelas têm essa coluna, então ela é o recorte único — sem isso um
+    usuário de filial leria o lançamento das outras.
+    """
     cliente = conectar_supabase()
-    resposta = (
-        cliente.table(TABELAS_DB[tabela_app])
-        .select("*")
-        .order("id", desc=True)
-        .limit(limite)
-        .execute()
-    )
+    consulta = cliente.table(TABELAS_DB[tabela_app]).select("*")
+    if not PERFIL["admin"]:
+        consulta = consulta.in_("FILIAL", PERFIL["filiais"])
+    resposta = consulta.order("id", desc=True).limit(limite).execute()
     return pd.DataFrame(resposta.data or [])
+
+
+# ================================================
+# PERFIL DE ACESSO (quem vê o quê)
+# ================================================
+# Duas classes de usuário:
+#   - ADMINS (lista no código): veem todas as filiais.
+#   - cadastrados em SUSTENTABILIDADE_USUARIOS: veem apenas a(s) filial(is)
+#     da sua linha, e só conseguem lançar para ela.
+#
+# ATENÇÃO — este filtro é da APLICAÇÃO, não do banco. O login é Azure AD, e
+# o Supabase não sabe quem está logado: a chave do app fala com o PostgREST
+# sempre como o mesmo papel. Quem tiver a chave e a URL continua lendo tudo
+# por fora do app. RLS de verdade por filial exigiria Supabase Auth (ou um
+# JWT assinado com a filial no claim). Ver observação no fim do arquivo.
+
+TABELA_USUARIOS = "SUSTENTABILIDADE_USUARIOS"
+
+# Quem vê tudo. Reaproveita a lista que já existia no topo do arquivo.
+ADMINS = {e.strip().lower() for e in USUARIOS_AUTORIZADOS}
+
+# A tabela pode ter nomeado a coluna de e-mail de várias formas; em vez de
+# adivinhar uma, procuramos entre os nomes plausíveis.
+NOMES_EMAIL = {"USUARIO", "USUARIOS", "EMAIL", "EMAILS", "LOGIN", "USUARIOEMAIL"}
+NOMES_FILIAL = {"FILIAL", "FILIAIS"}
+NOMES_CNPJ = {"CNPJ", "CNPJS"}
+
+
+def chave_simples(nome) -> str:
+    """Nome de coluna sem espaço, underscore ou caixa — para comparar."""
+    return "".join(ch for ch in str(nome).upper() if ch.isalnum())
+
+
+def acha_coluna(colunas, nomes_aceitos):
+    for coluna in colunas:
+        if chave_simples(coluna) in nomes_aceitos:
+            return coluna
+    return None
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def carregar_usuarios() -> pd.DataFrame:
+    """Cache de 5 min: usuário novo passa a valer sem reiniciar o app."""
+    cliente = conectar_supabase()
+    resposta = cliente.table(TABELA_USUARIOS).select("*").execute()
+    return pd.DataFrame(resposta.data or [])
+
+
+def valores_limpos(serie) -> list:
+    vistos = set()
+    for bruto in serie.dropna():
+        texto = str(bruto).strip()
+        if texto:
+            vistos.add(texto.upper())
+    return sorted(vistos)
+
+
+def perfil_acesso(email: str) -> dict:
+    """Devolve o que este e-mail pode ver."""
+    email = (email or "").strip().lower()
+    admin = email in ADMINS
+    perfil = {
+        "email": email,
+        "admin": admin,
+        "ok": admin,
+        "filiais": [],
+        "cnpjs": [],
+        "erro": None,
+    }
+
+    try:
+        df = carregar_usuarios()
+    except Exception as erro:
+        perfil["erro"] = f"não foi possível ler {TABELA_USUARIOS}: {erro}"
+        return perfil
+
+    if df.empty:
+        perfil["erro"] = (
+            f"{TABELA_USUARIOS} voltou vazia — tabela sem linhas ou RLS sem "
+            "política de SELECT"
+        )
+        return perfil
+
+    col_email = acha_coluna(df.columns, NOMES_EMAIL)
+    col_filial = acha_coluna(df.columns, NOMES_FILIAL)
+    col_cnpj = acha_coluna(df.columns, NOMES_CNPJ)
+
+    if col_email is None or col_filial is None:
+        perfil["erro"] = (
+            f"{TABELA_USUARIOS} precisa de uma coluna de e-mail e uma de FILIAL. "
+            f"Colunas encontradas: {list(df.columns)}"
+        )
+        return perfil
+
+    iguais = df[col_email].astype(str).str.strip().str.lower() == email
+    minhas = df[iguais]
+    # o usuário pode ter mais de uma linha, uma por filial
+    perfil["filiais"] = valores_limpos(minhas[col_filial])
+    if col_cnpj is not None:
+        perfil["cnpjs"] = valores_limpos(minhas[col_cnpj])
+
+    if not admin:
+        perfil["ok"] = bool(perfil["filiais"])
+    return perfil
+
+
+def filiais_cadastradas() -> list:
+    """Lista mestra de filiais: a coluna FILIAL da tabela de usuários."""
+    try:
+        df = carregar_usuarios()
+    except Exception:
+        return []
+    if df.empty:
+        return []
+    coluna = acha_coluna(df.columns, NOMES_FILIAL)
+    return valores_limpos(df[coluna]) if coluna is not None else []
+
+
+def opcoes_filial() -> list:
+    """Admin escolhe qualquer filial; os demais, só a(s) sua(s)."""
+    return filiais_cadastradas() if PERFIL["admin"] else PERFIL["filiais"]
+
+
+def entrada_filial(chave: str, label: str = "FILIAL") -> None:
+    """Campo FILIAL como lista fechada, com texto livre como último recurso."""
+    opcoes = opcoes_filial()
+    if not opcoes:
+        st.text_input(
+            label,
+            key=chave,
+            help=f"{TABELA_USUARIOS} não devolveu filiais — digite manualmente",
+        )
+        return
+    st.selectbox(label, opcoes, key=chave)
+
+
+# ------------------------------------------------
+# Porteiro: aqui o acesso é decidido
+# ------------------------------------------------
+PERFIL = perfil_acesso(usuario_email_logado)
+
+if not PERFIL["ok"]:
+    st.error(
+        "Acesso não autorizado. Seu e-mail não está na lista do painel nem "
+        f"cadastrado em {TABELA_USUARIOS} com uma filial."
+    )
+    if PERFIL["erro"]:
+        st.caption(f"Detalhe técnico: {PERFIL['erro']}")
+    st.caption(f"E-mail identificado: {PERFIL['email']}")
+    st.stop()
 
 
 def concluir(
@@ -401,7 +556,8 @@ def fmt_brl(valor: float) -> str:
 
 
 def txt(chave: str) -> str:
-    return str(st.session_state.get(chave, "")).strip()
+    valor = st.session_state.get(chave)
+    return "" if valor is None else str(valor).strip()
 
 
 # ================================================
@@ -524,6 +680,11 @@ def tela_menu() -> None:
     st.markdown("### Painel de Sustentabilidade")
     st.caption(f"Bem-vindo(a), {user_name} — {usuario_email_logado}")
 
+    if PERFIL["admin"]:
+        st.caption("Acesso: todas as filiais")
+    else:
+        st.caption("Acesso restrito à(s) filial(is): " + ", ".join(PERFIL["filiais"]))
+
     url_sb, key_sb = credenciais_supabase()
     if not url_sb or not key_sb:
         st.error(
@@ -613,7 +774,7 @@ def salvar_consumo() -> None:
 def form_consumos() -> None:
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.text_input("FILIAL", key="con_filial")
+        entrada_filial("con_filial")
     with c2:
         st.number_input(
             "ANO",
@@ -725,7 +886,7 @@ def salvar_licenca() -> None:
 def form_licencas() -> None:
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.text_input("FILIAL", key="lic_filial")
+        entrada_filial("lic_filial")
         st.text_input("LICENÇA", key="lic_licenca")
         st.selectbox("STATUS", OPCOES_STATUS, key="lic_status")
     with c2:
@@ -811,7 +972,7 @@ def form_custos() -> None:
         st.text_input("PEDIDO", key="cus_pedido")
         st.number_input("VALOR", min_value=0.0, step=0.01, format="%.2f", key="cus_valor")
     with c2:
-        st.text_input("FILIAL", key="cus_filial")
+        entrada_filial("cus_filial")
         st.text_input("MIGO", key="cus_migo")
         st.selectbox("MÊS", MESES, index=date.today().month - 1, key="cus_mes")
     with c3:
@@ -871,7 +1032,7 @@ def salvar_reciclaveis() -> None:
 def form_reciclaveis() -> None:
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.text_input("FILIAL", key="rec_filial")
+        entrada_filial("rec_filial")
         st.date_input("DATA", value=date.today(), format="DD/MM/YYYY", key="rec_data")
         peso = st.number_input("PESO", min_value=0.0, step=0.01, format="%.2f", key="rec_peso")
     with c2:
@@ -939,7 +1100,7 @@ def recalcular_total_reciclavel(registro: dict, mudancas: dict) -> dict:
 # ------------------------------------------------
 CAMPOS_EDICAO = {
     "consumos": [
-        campo("FILIAL", "texto"),
+        campo("FILIAL", "filial"),
         campo("ANO", "inteiro", minimo=1990, maximo=2100),
         campo("MES", "mes", "MÊS"),
         campo(COL_SOLIDOS, "decimal", "SÓLIDOS CONTAMINADOS"),
@@ -952,7 +1113,7 @@ CAMPOS_EDICAO = {
         campo("CO2", "decimal", "CO²"),
     ],
     "licencas": [
-        campo("FILIAL", "texto"),
+        campo("FILIAL", "filial"),
         campo("LICENCA", "texto", "LICENÇA"),
         campo("CNPJ", "texto"),
         campo("ROTA", "texto"),
@@ -964,7 +1125,7 @@ CAMPOS_EDICAO = {
     ],
     "custos": [
         campo("FORNECEDOR", "texto"),
-        campo("FILIAL", "texto"),
+        campo("FILIAL", "filial"),
         campo("NOTA_BOLETO", "texto", "NOTA/BOLETO"),
         campo("PEDIDO", "texto"),
         campo("MIGO", "texto"),
@@ -977,7 +1138,7 @@ CAMPOS_EDICAO = {
         campo("SETOR", "opcoes", opcoes=OPCOES_SETOR),
     ],
     "reciclaveis": [
-        campo("FILIAL", "texto"),
+        campo("FILIAL", "filial"),
         campo("DATA", "data"),
         campo("MATERIAL", "texto"),
         campo("PESO", "decimal"),
@@ -1101,6 +1262,18 @@ def desenha_campo(spec: dict, registro: dict, prefixo: str):
         atual = nome_mes(atual)
         indice = MESES.index(atual) if atual in MESES else date.today().month - 1
         return st.selectbox(label, MESES, index=indice, key=chave)
+    if tipo == "filial":
+        opcoes = list(opcoes_filial())
+        if not opcoes:
+            return st.text_input(
+                label, value="" if atual is None else str(atual), key=chave
+            )
+        # filial gravada fora da lista atual entra na lista, para não ser
+        # trocada por outra sem ninguém pedir
+        if atual not in (None, "") and atual not in opcoes:
+            opcoes = [atual] + opcoes
+        indice = opcoes.index(atual) if atual in opcoes else 0
+        return st.selectbox(label, opcoes, index=indice, key=chave)
     if tipo == "opcoes":
         opcoes = list(spec["opcoes"])
         # valor fora da lista entra na lista: melhor exibir o que está no
