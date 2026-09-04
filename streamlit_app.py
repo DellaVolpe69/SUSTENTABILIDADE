@@ -1155,7 +1155,7 @@ CAMPOS_EDICAO = {
 # colunas que compõem o rótulo do registro na lista de seleção
 RESUMO_REGISTRO = {
     "consumos": ("FILIAL", "MES", "ANO"),
-    "licencas": ("FILIAL", "LICENCA", "CATEGORIA"),
+    "licencas": ("FILIAL", "LICENCA", COL_DT_VENCIMENTO),
     "custos": ("FORNECEDOR", "NOTA_BOLETO", "VALOR"),
     "reciclaveis": ("FILIAL", "MATERIAL", "DATA"),
 }
@@ -1169,6 +1169,8 @@ def para_int(valor, padrao=0) -> int:
     ROTA virou text no banco, então um "12A" ou "S/ROTA" chegaria aqui e
     um int() cru derrubava a tela inteira por causa de uma linha.
     """
+    if isinstance(valor, float) and valor != valor:   # NaN
+        return padrao
     try:
         return int(float(str(valor).strip().replace(",", ".")))
     except (TypeError, ValueError):
@@ -1176,10 +1178,13 @@ def para_int(valor, padrao=0) -> int:
 
 
 def para_float(valor, padrao=0.0) -> float:
+    if isinstance(valor, float) and valor != valor:   # NaN
+        return padrao
     try:
-        return float(str(valor).strip().replace(",", "."))
+        convertido = float(str(valor).strip().replace(",", "."))
     except (TypeError, ValueError):
         return padrao
+    return padrao if convertido != convertido else convertido
 
 
 def nome_mes(valor):
@@ -1232,9 +1237,9 @@ def desenha_campo(spec: dict, registro: dict, prefixo: str):
     atual = registro.get(col)
 
     if tipo == "texto":
-        return st.text_input(label, value="" if atual is None else str(atual), key=chave)
+        return st.text_input(label, value=texto_celula(atual), key=chave)
     if tipo == "texto_longo":
-        return st.text_area(label, value="" if atual is None else str(atual), key=chave)
+        return st.text_area(label, value=texto_celula(atual), key=chave)
     if tipo == "inteiro":
         return int(
             st.number_input(
@@ -1365,16 +1370,93 @@ def confirmar_exclusao(tabela_app, id_registro, chave_conf, chave_msg, chave_ver
 
 
 def rotulo_registro(tabela_app: str, linha: dict) -> str:
-    partes = []
-    for col in RESUMO_REGISTRO.get(tabela_app, ()):
-        valor = linha.get(col)
-        if valor not in (None, ""):
-            partes.append(str(valor)[:22])
+    partes = [
+        texto_celula(linha.get(col))[:22]
+        for col in RESUMO_REGISTRO.get(tabela_app, ())
+        if texto_celula(linha.get(col))
+    ]
     return f"#{linha.get('id')} · " + " · ".join(partes) if partes else f"#{linha.get('id')}"
 
 
+# ------------------------------------------------
+# Busca do registro a editar
+# ------------------------------------------------
+# Com 784 licenças, rolar uma lista única não funciona. Filtra-se primeiro
+# por FILIAL e depois pela coluna que identifica o lançamento; as opções do
+# segundo filtro saem do que sobrou do primeiro, então escolher a filial já
+# encurta a lista. A tabela exibida e a lista de escolha vêm do MESMO
+# conjunto filtrado, na mesma ordem — antes elas divergiam quando a tabela
+# era reordenada por um clique no cabeçalho.
+
+FILTROS_EDICAO = {
+    "consumos": ("FILIAL", "ANO"),
+    "licencas": ("FILIAL", "LICENCA"),
+    "custos": ("FILIAL", "FORNECEDOR"),
+    "reciclaveis": ("FILIAL", "MATERIAL"),
+}
+TODAS = "(todas)"
+
+
+def texto_celula(valor) -> str:
+    """Valor de célula como texto limpo; NaN e None viram ''."""
+    if valor is None:
+        return ""
+    if isinstance(valor, float) and valor != valor:      # NaN
+        return ""
+    return str(valor).strip()
+
+
+def limpa_nulos(registro: dict) -> dict:
+    """NaN do pandas volta a ser None.
+
+    df.to_dict() devolve NaN onde a coluna é nula, e str(NaN) == 'nan'. Sem
+    esta limpeza o campo OBSERVAÇÃO abre com o texto 'nan' e, ao salvar,
+    grava a string 'nan' no banco.
+    """
+    return {
+        chave: (None if isinstance(valor, float) and valor != valor else valor)
+        for chave, valor in registro.items()
+    }
+
+
+def aplica_filtros(tabela_app: str, df: pd.DataFrame) -> pd.DataFrame:
+    """Desenha os filtros e devolve o subconjunto correspondente."""
+    colunas = [c for c in FILTROS_EDICAO.get(tabela_app, ("FILIAL",)) if c in df.columns]
+    filtrado = df
+    caixas = st.columns(len(colunas) + 1)
+
+    for i, coluna in enumerate(colunas):
+        valores = sorted({texto_celula(v) for v in filtrado[coluna]} - {""})
+        chave = f"flt_{tabela_app}_{coluna}"
+        # se o valor guardado saiu da lista (por causa do filtro anterior ou
+        # de uma exclusão), volta para "(todas)" em vez de filtrar por algo
+        # que não existe mais
+        if st.session_state.get(chave) not in [TODAS] + valores:
+            st.session_state.pop(chave, None)
+        with caixas[i]:
+            escolha = st.selectbox(coluna, [TODAS] + valores, key=chave)
+        if escolha != TODAS:
+            filtrado = filtrado[filtrado[coluna].map(texto_celula) == escolha]
+
+    with caixas[-1]:
+        busca = st.text_input(
+            "Buscar",
+            key=f"busca_{tabela_app}",
+            placeholder="parte de qualquer campo",
+        )
+    alvo = busca.strip().lower()
+    if alvo:
+        casa = filtrado.apply(
+            lambda linha: alvo in " ".join(texto_celula(v).lower() for v in linha),
+            axis=1,
+        )
+        filtrado = filtrado[casa]
+
+    return filtrado
+
+
 def painel_edicao(tabela_app: str, limite: int = LIMITE_REGISTROS) -> None:
-    """Aba de edição: lista, escolhe um registro, edita ou exclui."""
+    """Aba de edição: filtra, escolhe um registro, edita ou exclui."""
     chave_versao = f"ver_{tabela_app}"
     versao = st.session_state.setdefault(chave_versao, 0)
     chave_msg = f"msg_edicao_{tabela_app}"
@@ -1395,14 +1477,26 @@ def painel_edicao(tabela_app: str, limite: int = LIMITE_REGISTROS) -> None:
         )
         return
 
-    st.dataframe(df, hide_index=True, height=240)
-    st.caption(f"{len(df)} registro(s) mais recente(s).")
-
     if "id" not in df.columns:
         st.warning("A consulta não trouxe a coluna id — sem ela não há como editar.")
+        st.dataframe(df, hide_index=True)
         return
 
-    registros = df.to_dict("records")
+    df = df.sort_values("id", ascending=False)
+    filtrado = aplica_filtros(tabela_app, df)
+
+    if filtrado.empty:
+        st.warning("Nenhum registro com esses filtros.")
+        st.caption(f"{len(df)} registro(s) carregado(s) no total.")
+        return
+
+    st.dataframe(filtrado, hide_index=True, height=240)
+    if len(filtrado) == len(df):
+        st.caption(f"{len(df)} registro(s) carregado(s).")
+    else:
+        st.caption(f"{len(filtrado)} de {len(df)} registro(s) — filtro aplicado.")
+
+    registros = [limpa_nulos(r) for r in filtrado.to_dict("records")]
     rotulos = {rotulo_registro(tabela_app, r): r for r in registros}
 
     st.divider()
@@ -1410,7 +1504,7 @@ def painel_edicao(tabela_app: str, limite: int = LIMITE_REGISTROS) -> None:
         "Registro",
         list(rotulos),
         key=f"sel_{tabela_app}_{versao}",
-        help="Escolha o lançamento que quer corrigir ou excluir",
+        help="A lista segue os filtros acima e a mesma ordem da tabela",
     )
     registro = rotulos[escolhido]
     id_registro = registro["id"]
