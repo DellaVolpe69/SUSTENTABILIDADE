@@ -697,46 +697,18 @@ def ir_para(tela: str) -> None:
     st.session_state["tela"] = tela
 
 
-# CSS dos botões do menu
-st.markdown(
-    """
-    <style>
-    div[data-testid="stButton"] > button {
-        background-color: rgba(0,0,0,0.35) !important;
-        color: white !important;
-        border: 2px solid #FF5D01 !important;
-        border-radius: 12px !important;
-        padding: 1.4em 1em !important;
-        font-size: 1.05rem !important;
-        font-weight: 600 !important;
-        width: 100% !important;
-        transition: 0.2s ease;
-    }
-    div[data-testid="stButton"] > button:hover {
-        background-color: #FF5D01 !important;
-        border: 2px solid white !important;
-        transform: scale(1.02);
-    }
-    div[data-testid="stButton"] > button:disabled {
-        border-color: rgba(255,255,255,0.25) !important;
-        color: rgba(255,255,255,0.45) !important;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-
 # ================================================
 # TELA INICIAL (MENU) — identidade ESG
 # ================================================
 # A arte de fundo já traz logo, selo ESG e as formas verdes embutidos, então
-# aqui vai só o conteúdo por cima dela. O menu é HTML puro: os cards são
-# âncoras (<a href="?tela=...">), porque um st.button não aceita ícone,
-# título, descrição e seta dentro do rótulo.
+# aqui vai só o conteúdo por cima dela.
 #
-# O CSS é injetado por tela: as telas internas continuam com o fundo escuro
-# atual, para não mexer na legibilidade dos formulários agora.
+# Cada card é montado em duas partes: o topo (ícone, título e descrição) é
+# HTML, e o rodapé é um st.button de verdade, colado por baixo pelo CSS.
+# A primeira versão usava o card inteiro como <a href="?tela=...">, o que
+# ficava idêntico ao layout — mas o link recarrega a página, o Streamlit
+# abre uma sessão nova, o token do Azure guardado em st.session_state se
+# perde e o login era pedido de novo a cada clique.
 
 URL_FUNDO_MENU = (
     "https://raw.githubusercontent.com/DellaVolpe69/Images/main/SUSTENTABILIDADE.png"
@@ -846,126 +818,160 @@ CSS_MENU = """
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap');
 
-/* A arte entra inteira (100% auto), sem degradê por cima: ela já traz a
-   área creme à esquerda, o logo, o selo ESG e as formas verdes. Um degradê
-   claro aqui apagava justamente o logo. O que garante a leitura dos cards
-   sobre o caminhão é o fundo opaco deles. */
+/* A arte entra inteira (100% auto, sem recorte) e presa ao viewport:
+   assim ela acompanha o zoom junto com o conteúdo, em vez de ficar parada
+   enquanto os cards crescem. Sem degradê por cima — a arte já traz a área
+   creme à esquerda, o logo, o selo ESG e as formas verdes. */
 .stApp {
     background:
-        url("URL_DO_FUNDO") top center / 100% auto no-repeat,
+        url("URL_DO_FUNDO") top center / 100% auto no-repeat fixed,
         #FAFAF7 !important;
 }
 header, [data-testid="stHeader"] { background: transparent !important; }
 [data-testid="stToolbar"] { right: 1rem; }
-/* o topo precisa desse respiro: abaixo dele fica o logo, que é parte da arte */
+
+/* conteúdo encostado à esquerda, como no layout aprovado: o Streamlit
+   centraliza o block-container por padrão, e era isso que jogava o painel
+   para o meio da tela */
 .block-container {
-    padding-top: 7.5rem !important;
-    padding-bottom: 2rem !important;
-    max-width: 1250px;
+    max-width: 100% !important;
+    padding: 7.5rem 2rem 2rem 3.2rem !important;
 }
+.dv-menu { max-width: 1180px; }
+/* o título precisa de largura fixa, senão os pilares o comprimem a zero */
+.dv-menu .dv-cabecalho > div:first-child { flex: 0 0 360px; }
+
+/* card e botão são dois elementos do Streamlit: sem zerar o espaço entre
+   eles ficaria uma fenda no meio do card. Vale para a tela toda porque
+   este CSS só é injetado no menu. */
+[data-testid="stVerticalBlock"] { gap: 0 !important; }
 
 .dv-menu, .dv-menu * { font-family: 'Poppins', 'Segoe UI', sans-serif; }
 .dv-menu { color: #3C4B42; }
 
 /* ---------- cabeçalho ---------- */
-.dv-cabecalho {
+.dv-menu .dv-cabecalho {
     display: flex; flex-wrap: wrap; gap: 26px 56px;
     align-items: flex-start; justify-content: space-between;
     margin: 0 0 12px;
 }
 .dv-menu .dv-eyebrow {
-    font-size: 1.35rem; font-weight: 300; color: #52645A;
-    margin: 0; line-height: 1.1;
+    font-size: 1.35rem !important; font-weight: 300 !important;
+    color: #52645A !important; margin: 0; line-height: 1.1;
 }
 .dv-menu .dv-titulo {
-    font-size: 2.6rem; font-weight: 700; color: #1F7A3D;
-    margin: -2px 0 10px; line-height: 1.05; letter-spacing: -0.5px;
+    font-size: 2.7rem !important; font-weight: 700 !important;
+    color: #1F7A3D !important; margin: -2px 0 10px; line-height: 1.05;
+    letter-spacing: -0.5px;
 }
-.dv-menu .dv-bemvindo { font-size: 0.9rem; color: #52645A; margin: 0 0 10px; }
-.dv-menu .dv-bemvindo a { color: #E4610A; text-decoration: none; }
+.dv-menu .dv-bemvindo {
+    font-size: 0.9rem !important; color: #52645A !important; margin: 0 0 10px;
+}
+.dv-menu .dv-bemvindo a { color: #E4610A !important; text-decoration: none; }
 .dv-menu .dv-acesso {
     display: inline-flex; align-items: center; gap: 8px;
-    font-size: 0.8rem; color: #52645A; margin: 0;
-    background: rgba(255,255,255,0.78); border: 1px solid #DCE5DD;
+    font-size: 0.8rem !important; color: #52645A !important; margin: 0;
+    background: rgba(255,255,255,0.8); border: 1px solid #DCE5DD;
     border-radius: 999px; padding: 5px 13px;
 }
-.dv-acesso svg { width: 15px; height: 15px; color: #1F7A3D; }
+.dv-menu .dv-acesso svg { width: 15px; height: 15px; color: #1F7A3D; }
 
 /* ---------- pilares ESG ---------- */
-.dv-pilares { display: flex; gap: 26px; flex-wrap: wrap; padding-top: 6px; }
-.dv-pilar { display: flex; gap: 10px; max-width: 185px; }
-.dv-pilar-bolha {
+.dv-menu .dv-pilares { display: flex; gap: 26px; flex-wrap: wrap; padding-top: 6px; }
+.dv-menu .dv-pilar { display: flex; gap: 10px; max-width: 185px; }
+.dv-menu .dv-pilar-bolha {
     flex: 0 0 auto; width: 36px; height: 36px; border-radius: 50%;
     display: grid; place-items: center; background: #EAF3EC;
 }
-.dv-pilar-bolha svg { width: 20px; height: 20px; }
-.dv-pilar h4 {
-    font-size: 0.78rem; font-weight: 700; letter-spacing: 0.06em;
-    margin: 2px 0 3px;
+.dv-menu .dv-pilar-bolha svg { width: 20px; height: 20px; }
+.dv-menu .dv-pilar h4 {
+    font-size: 0.78rem !important; font-weight: 700 !important;
+    letter-spacing: 0.06em; margin: 2px 0 3px;
 }
-.dv-menu .dv-pilar p { font-size: 0.7rem; line-height: 1.4; color: #6B7A70; margin: 0; }
+.dv-menu .dv-pilar p {
+    font-size: 0.7rem !important; line-height: 1.4;
+    color: #6B7A70 !important; margin: 0;
+}
 
 /* ---------- chamada ---------- */
 .dv-menu .dv-compromisso {
-    font-size: 1.28rem; font-weight: 300; color: #52645A;
-    margin: 2px 0 12px; line-height: 1.25;
+    font-size: 1.3rem !important; font-weight: 300 !important;
+    color: #52645A !important; margin: 2px 0 14px; line-height: 1.25;
 }
-.dv-menu .dv-compromisso b { color: #E4610A; font-weight: 600; }
+.dv-menu .dv-compromisso b { color: #E4610A !important; font-weight: 600 !important; }
 
 /* ---------- cards ---------- */
-.dv-cards {
-    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 12px; max-width: 660px; margin-bottom: 16px;
+/* o topo do card é HTML; o rodapé é um st.button de verdade, colado por
+   baixo. Navegação por botão (e não por link) é o que preserva a sessão —
+   um <a href> recarrega a página e o login do Azure se perde. */
+.dv-cardtopo {
+    background: rgba(255,255,255,0.96);
+    border: 1px solid #E3EAE4; border-bottom: none;
+    border-radius: 14px 14px 0 0;
+    padding: 15px 18px 8px; min-height: 112px;
 }
-.dv-card {
-    display: block; position: relative; text-decoration: none !important;
-    background: rgba(255,255,255,0.96); border: 1px solid #E3EAE4;
-    border-radius: 14px; padding: 14px 18px 28px;
-    transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease;
-}
-.dv-card:hover {
-    transform: translateY(-3px);
-    box-shadow: 0 10px 26px rgba(31,122,61,0.14);
-    border-color: #1F7A3D;
-}
-.dv-card.laranja:hover { border-color: #E4610A; box-shadow: 0 10px 26px rgba(228,97,10,0.16); }
-.dv-card-topo { display: flex; gap: 13px; align-items: flex-start; }
-.dv-card-bolha {
+.dv-cardtopo .dv-card-topo { display: flex; gap: 13px; align-items: flex-start; }
+.dv-cardtopo .dv-card-bolha {
     flex: 0 0 auto; width: 42px; height: 42px; border-radius: 50%;
     display: grid; place-items: center; background: #EAF3EC; color: #1F7A3D;
 }
-.dv-card.laranja .dv-card-bolha { background: #FDEEE3; color: #E4610A; }
-.dv-card-bolha svg { width: 23px; height: 23px; }
-.dv-card h3 {
-    font-size: 0.84rem; font-weight: 700; letter-spacing: 0.04em;
-    color: #1F7A3D; margin: 2px 0 6px; line-height: 1.25;
+.dv-cardtopo.laranja .dv-card-bolha { background: #FDEEE3; color: #E4610A; }
+.dv-cardtopo .dv-card-bolha svg { width: 23px; height: 23px; }
+.dv-cardtopo h3 {
+    font-size: 0.84rem !important; font-weight: 700 !important;
+    letter-spacing: 0.04em; color: #1F7A3D !important; margin: 2px 0 6px;
+    line-height: 1.25;
 }
-.dv-card.laranja h3 { color: #E4610A; }
-.dv-menu .dv-card p { font-size: 0.74rem; line-height: 1.45; color: #6B7A70; margin: 0; }
-.dv-card-seta {
-    position: absolute; right: 18px; bottom: 12px;
-    font-size: 1.05rem; color: #1F7A3D; line-height: 1;
+.dv-cardtopo.laranja h3 { color: #E4610A !important; }
+.dv-cardtopo p {
+    font-size: 0.74rem !important; line-height: 1.45;
+    color: #6B7A70 !important; margin: 0;
 }
-.dv-card.laranja .dv-card-seta { color: #E4610A; }
+
+/* rodapé clicável do card */
+div[data-testid="stButton"] > button {
+    background: rgba(255,255,255,0.96) !important;
+    color: #1F7A3D !important;
+    border: 1px solid #E3EAE4 !important; border-top: none !important;
+    border-radius: 0 0 14px 14px !important;
+    width: 100% !important; padding: 0.5em 1.1em !important;
+    font-weight: 600 !important; font-size: 0.76rem !important;
+    letter-spacing: 0.04em;
+    justify-content: flex-end !important; text-align: right !important;
+    box-shadow: none !important; transition: 0.15s ease;
+    margin-bottom: 14px !important;
+}
+div[data-testid="stButton"] > button:hover {
+    background: #EAF3EC !important; border-color: #1F7A3D !important;
+    color: #14532D !important; transform: none !important;
+}
+/* cor por card: só funciona nas versões do Streamlit que expõem st-key-*.
+   Onde não existir, o rodapé fica verde — sem quebrar nada. */
+.st-key-card_licencas button, .st-key-card_custos button { color: #E4610A !important; }
+.st-key-card_licencas button:hover, .st-key-card_custos button:hover {
+    background: #FDEEE3 !important; border-color: #E4610A !important;
+    color: #B84E08 !important;
+}
 
 /* ---------- faixa de compromissos ---------- */
-.dv-faixa {
+.dv-menu .dv-faixa {
     background: rgba(255,255,255,0.94); border: 1px solid #E3EAE4;
-    border-radius: 16px; padding: 12px 18px 14px; max-width: 720px;
+    border-radius: 16px; padding: 12px 18px 14px;
+    max-width: 760px; margin-top: 22px;
 }
 .dv-menu .dv-faixa-titulo {
-    text-align: center; font-size: 0.88rem; font-weight: 600;
-    letter-spacing: 0.05em; color: #14532D; margin: 0 0 12px;
+    text-align: center; font-size: 0.88rem !important; font-weight: 600 !important;
+    letter-spacing: 0.05em; color: #14532D !important; margin: 0 0 12px;
 }
-.dv-menu .dv-faixa-titulo b { color: #E4610A; font-weight: 700; }
-.dv-faixa-itens {
+.dv-menu .dv-faixa-titulo b { color: #E4610A !important; font-weight: 700 !important; }
+.dv-menu .dv-faixa-itens {
     display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap;
 }
-.dv-faixa-item { text-align: center; flex: 1 1 110px; color: #1F7A3D; }
-.dv-faixa-item svg { width: 25px; height: 25px; }
+.dv-menu .dv-faixa-item { text-align: center; flex: 1 1 110px; color: #1F7A3D; }
+.dv-menu .dv-faixa-item svg { width: 25px; height: 25px; }
 .dv-menu .dv-faixa-item span {
-    display: block; margin-top: 5px; font-size: 0.67rem;
-    line-height: 1.3; color: #6B7A70;
+    display: block; margin-top: 5px; font-size: 0.67rem !important;
+    line-height: 1.3; color: #6B7A70 !important;
 }
 
 /* ---------- telas estreitas ---------- */
@@ -977,12 +983,75 @@ header, [data-testid="stHeader"] { background: transparent !important; }
             url("URL_DO_LOGO") 22px 18px / 160px auto no-repeat,
             #FAFAF7 !important;
     }
-    .block-container { padding-top: 5.5rem !important; }
-    .dv-menu .dv-titulo { font-size: 2.1rem; }
-    .dv-cards { grid-template-columns: 1fr; }
+    .block-container { padding: 5.5rem 1.2rem 2rem 1.2rem !important; }
+    .dv-menu .dv-titulo { font-size: 2.1rem !important; }
 }
 </style>
 """
+
+
+def html_cabecalho() -> str:
+    escopo = (
+        "todas as filiais"
+        if PERFIL["admin"]
+        else ", ".join(PERFIL["filiais"]) or "nenhuma filial"
+    )
+    return (
+        '<div class="dv-menu">'
+        '<div class="dv-cabecalho"><div>'
+        '<p class="dv-eyebrow">Painel de</p>'
+        '<h1 class="dv-titulo">Sustentabilidade</h1>'
+        f'<p class="dv-bemvindo">Bem-vindo(a), {user_name} — '
+        f'<a href="mailto:{usuario_email_logado}">{usuario_email_logado}</a></p>'
+        f'<p class="dv-acesso">{SVG_PESSOAS} Acesso: {escopo}</p>'
+        "</div>"
+        f"{html_pilares()}"
+        "</div>"
+        '<p class="dv-compromisso">Nosso compromisso,<br><b>nosso caminho.</b></p>'
+        "</div>"
+    )
+
+
+def html_card_topo(titulo: str, icone: str, cor: str, descricao: str) -> str:
+    return (
+        f'<div class="dv-cardtopo {cor}"><div class="dv-card-topo">'
+        f'<div class="dv-card-bolha">{icone}</div>'
+        f"<div><h3>{titulo}</h3><p>{descricao}</p></div>"
+        "</div></div>"
+    )
+
+
+def tela_menu() -> None:
+    estilo = CSS_MENU.replace("URL_DO_FUNDO", URL_FUNDO_MENU).replace(
+        "URL_DO_LOGO", URL_LOGO_COLORIDO
+    )
+    st.markdown(estilo, unsafe_allow_html=True)
+
+    url_sb, key_sb = credenciais_supabase()
+    if not url_sb or not key_sb:
+        st.error(
+            "SUPABASE_URL e/ou SUPABASE_KEY não encontrados em st.secrets — "
+            "nenhuma tela vai gravar."
+        )
+
+    st.markdown(html_cabecalho(), unsafe_allow_html=True)
+
+    # a terceira coluna é só respiro: mantém os cards na área clara, sem
+    # avançar sobre o caminhão
+    col_a, col_b, _respiro = st.columns([1, 1, 1.5], gap="small")
+    for i, (tela, titulo, icone, cor, descricao) in enumerate(CARDS_MENU):
+        with col_a if i % 2 == 0 else col_b:
+            st.markdown(html_card_topo(titulo, icone, cor, descricao), unsafe_allow_html=True)
+            st.button(
+                "Acessar  →",
+                key=f"card_{tela}",
+                on_click=ir_para,
+                args=(tela,),
+                use_container_width=True,
+            )
+
+    st.markdown('<div class="dv-menu">' + html_rodape() + "</div>", unsafe_allow_html=True)
+
 
 def html_pilares() -> str:
     partes = []
@@ -996,21 +1065,6 @@ def html_pilares() -> str:
     return '<div class="dv-pilares">' + "".join(partes) + "</div>"
 
 
-def html_cards() -> str:
-    partes = []
-    for tela, titulo, icone, cor, descricao in CARDS_MENU:
-        partes.append(
-            f'<a class="dv-card {cor}" href="?tela={tela}" target="_self">'
-            '<div class="dv-card-topo">'
-            f'<div class="dv-card-bolha">{icone}</div>'
-            f"<div><h3>{titulo}</h3><p>{descricao}</p></div>"
-            "</div>"
-            '<span class="dv-card-seta">&#8594;</span>'
-            "</a>"
-        )
-    return '<div class="dv-cards">' + "".join(partes) + "</div>"
-
-
 def html_rodape() -> str:
     itens = "".join(
         f'<div class="dv-faixa-item">{icone}<span>{texto}</span></div>'
@@ -1021,44 +1075,6 @@ def html_rodape() -> str:
         '<p class="dv-faixa-titulo">JUNTOS, <b>MOVEMOS</b> UM FUTURO MELHOR.</p>'
         f'<div class="dv-faixa-itens">{itens}</div>'
         "</div>"
-    )
-
-
-def tela_menu() -> None:
-    estilo = CSS_MENU.replace("URL_DO_FUNDO", URL_FUNDO_MENU).replace(
-        "URL_DO_LOGO", URL_LOGO_COLORIDO
-    )
-    st.markdown(estilo, unsafe_allow_html=True)
-
-    escopo = (
-        "todas as filiais"
-        if PERFIL["admin"]
-        else ", ".join(PERFIL["filiais"]) or "nenhuma filial"
-    )
-
-    url_sb, key_sb = credenciais_supabase()
-    if not url_sb or not key_sb:
-        st.error(
-            "SUPABASE_URL e/ou SUPABASE_KEY não encontrados em st.secrets — "
-            "nenhuma tela vai gravar."
-        )
-
-    st.markdown(
-        '<div class="dv-menu">'
-        '<div class="dv-cabecalho"><div>'
-        '<p class="dv-eyebrow">Painel de</p>'
-        '<h1 class="dv-titulo">Sustentabilidade</h1>'
-        f'<p class="dv-bemvindo">Bem-vindo(a), {user_name} — '
-        f'<a href="mailto:{usuario_email_logado}">{usuario_email_logado}</a></p>'
-        f'<p class="dv-acesso">{SVG_PESSOAS} Acesso: {escopo}</p>'
-        "</div>"
-        f"{html_pilares()}"
-        "</div>"
-        '<p class="dv-compromisso">Nosso compromisso,<br><b>nosso caminho.</b></p>'
-        f"{html_cards()}"
-        f"{html_rodape()}"
-        "</div>",
-        unsafe_allow_html=True,
     )
 
 
@@ -2183,19 +2199,7 @@ ROTAS = {
     "indicador": tela_indicador,
 }
 
-def absorve_tela_da_url() -> None:
-    """Os cards do menu navegam por ?tela=...; aqui isso vira estado da sessão.
-
-    O parâmetro é apagado em seguida: se ficasse na URL, ele venceria o
-    session_state a cada rerun e o botão Voltar não sairia da tela.
-    """
-    escolhida = st.query_params.get("tela")
-    if not escolhida:
-        return
-    if escolhida in ROTAS:
-        st.session_state["tela"] = escolhida
-    del st.query_params["tela"]
-
-
-absorve_tela_da_url()
+# A navegação é por st.button (ir_para), nunca por link: um <a href> faz o
+# navegador recarregar a página, o Streamlit abre uma sessão nova, o token
+# do Azure em st.session_state se perde e o login é pedido outra vez.
 ROTAS.get(st.session_state["tela"], tela_menu)()
