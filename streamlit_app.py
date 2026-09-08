@@ -115,25 +115,19 @@ USUARIOS_AUTORIZADOS = {
     "anderson.junior@dellavolpe.com.br",  # acesso para testes
 }
 
-# CSS de fundo
-st.markdown(
-    f"""
-    <style>
-    .stApp {{
-        background: linear-gradient(rgba(0,0,0,0.7), rgba(0,0,0,0.7)),
-            url("{url_imagem}");
-        background-size: cover;
-    }}
-    header, [data-testid="stHeader"] {{
-        background: transparent;
-    }}
-    .stExpander, .st-emotion-cache-16idsys, .stCard {{
-        background: rgba(0,0,0,0.35) !important;
-    }}
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+# CSS da tela de login. Depois do login cada tela injeta o seu (CSS_MENU ou
+# CSS_INTERNO), então este fundo escuro deixou de ser global — carregá-lo em
+# todas as telas só custava o download de uma imagem que não seria vista.
+CSS_LOGIN = f"""
+<style>
+.stApp {{
+    background: linear-gradient(rgba(0,0,0,0.7), rgba(0,0,0,0.7)),
+        url("{url_imagem}");
+    background-size: cover;
+}}
+header, [data-testid="stHeader"] {{ background: transparent; }}
+</style>
+"""
 
 # Configurações do Azure AD OAuth2
 client_id = st.secrets["AZURE_CLIENT_ID"]
@@ -185,6 +179,8 @@ if st.session_state["token"] is None:
     authorization_url, state = azure.authorization_url(
         authorization_base_url, prompt="select_account"
     )
+
+    st.markdown(CSS_LOGIN, unsafe_allow_html=True)
 
     c1, c2, c3 = st.columns([1, 2, 1])
     with c2:
@@ -628,6 +624,61 @@ def excluir_evidencias(id_registro) -> int:
 
 
 # ================================================
+# TEMA CLARO (sem config.toml)
+# ================================================
+# O Streamlit escolhe o tema pela preferência do VISITANTE: quem está com o
+# sistema em modo escuro recebe widgets escuros, e o CSS das telas não
+# alcança o interior deles (menu do selectbox, calendário, popover de ajuda).
+# O jeito canônico de travar isso é .streamlit/config.toml — que é um
+# ARQUIVO SEPARADO. Como o app é distribuído como um .py único, o tema é
+# forçado aqui.
+#
+# color-scheme é o que faz o navegador desenhar scrollbar e controles
+# nativos na versão clara; sem ele sobram detalhes escuros.
+
+CSS_BASE_CLARA = """
+<style>
+:root, .stApp { color-scheme: light !important; }
+
+[data-testid="stAppViewContainer"] { color: #2C3A32; }
+[data-testid="stAppViewContainer"] p,
+[data-testid="stAppViewContainer"] span,
+[data-testid="stAppViewContainer"] label,
+[data-testid="stAppViewContainer"] li { color: #3C4B42; }
+
+/* menu do selectbox, calendário do date_input e popovers de ajuda: ficam
+   fora do container da página, então precisam de regra própria */
+[data-baseweb="popover"] [data-baseweb="menu"],
+[data-baseweb="popover"] ul[role="listbox"],
+[data-baseweb="calendar"],
+[data-baseweb="datepicker"] {
+    background: #FFFFFF !important;
+    color: #2C3A32 !important;
+    border: 1px solid #DCE5DD !important;
+}
+[role="option"] { color: #2C3A32 !important; background: transparent !important; }
+[role="option"]:hover, [role="option"][aria-selected="true"] {
+    background: #EAF3EC !important; color: #14532D !important;
+}
+[data-baseweb="calendar"] [aria-selected="true"] {
+    background: #1F7A3D !important; color: #FFFFFF !important;
+}
+[data-baseweb="tooltip"] { background: #14532D !important; color: #FFFFFF !important; }
+
+/* mensagens de estado: st.success / st.warning / st.error / st.info */
+[data-testid="stAlert"] { border-radius: 10px !important; }
+
+/* barra de rolagem no tom do painel */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: #C9DACE; border-radius: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+</style>
+"""
+
+st.markdown(CSS_BASE_CLARA, unsafe_allow_html=True)
+
+
+# ================================================
 # NAVEGAÇÃO ENTRE TELAS
 # ================================================
 TELAS = {
@@ -677,17 +728,313 @@ st.markdown(
 
 
 # ================================================
-# TELA INICIAL (MENU)
+# TELA INICIAL (MENU) — identidade ESG
 # ================================================
-def tela_menu() -> None:
-    st.image(url_logo, width=260)
-    st.markdown("### Painel de Sustentabilidade")
-    st.caption(f"Bem-vindo(a), {user_name} — {usuario_email_logado}")
+# A arte de fundo já traz logo, selo ESG e as formas verdes embutidos, então
+# aqui vai só o conteúdo por cima dela. O menu é HTML puro: os cards são
+# âncoras (<a href="?tela=...">), porque um st.button não aceita ícone,
+# título, descrição e seta dentro do rótulo.
+#
+# O CSS é injetado por tela: as telas internas continuam com o fundo escuro
+# atual, para não mexer na legibilidade dos formulários agora.
 
-    if PERFIL["admin"]:
-        st.caption("Acesso: todas as filiais")
-    else:
-        st.caption("Acesso restrito à(s) filial(is): " + ", ".join(PERFIL["filiais"]))
+URL_FUNDO_MENU = (
+    "https://raw.githubusercontent.com/DellaVolpe69/Images/main/SUSTENTABILIDADE.png"
+)
+URL_LOGO_COLORIDO = "https://raw.githubusercontent.com/DellaVolpe69/Images/main/logo.png"
+
+VERDE = "#1F7A3D"
+VERDE_ESCURO = "#14532D"
+LARANJA = "#E4610A"
+
+# ícones desenhados aqui em SVG: o mockup usa um conjunto próprio que não
+# está no repositório de imagens. currentColor faz cada um herdar a cor do
+# seu card.
+SVG_RECICLAR = (
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"'
+    ' stroke-linecap="round" stroke-linejoin="round">'
+    '<path d="M7.5 4.5 12 4.5 9.8 8.3"/><path d="M12 4.5 9.8 8.3"/>'
+    '<path d="M4.2 15.5 2 11.7l4.4-.1"/><path d="M6.4 11.6 2 11.7"/>'
+    '<path d="M19.8 15.5 22 11.7l-4.4-.1"/>'
+    '<path d="M5.2 17.5h5.1l-2.2 3.8"/><path d="M18.8 17.5h-5.1l2.2 3.8"/>'
+    '<path d="M12 4.5 16.4 12"/><path d="M7.6 12 3.2 19.5"/>'
+    '<path d="M16.4 12l4.4 7.5"/></svg>'
+)
+SVG_DOCUMENTO = (
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"'
+    ' stroke-linecap="round" stroke-linejoin="round">'
+    '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/>'
+    '<path d="M14 3v5h5"/><path d="M9 13h6"/><path d="M9 17h4"/></svg>'
+)
+SVG_MOEDAS = (
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"'
+    ' stroke-linecap="round" stroke-linejoin="round">'
+    '<ellipse cx="12" cy="6.5" rx="6.5" ry="2.6"/>'
+    '<path d="M5.5 6.5v4c0 1.4 2.9 2.6 6.5 2.6s6.5-1.2 6.5-2.6v-4"/>'
+    '<path d="M5.5 10.5v4c0 1.4 2.9 2.6 6.5 2.6s6.5-1.2 6.5-2.6v-4"/>'
+    '<path d="M12 17.1v2.4"/><path d="M9.6 19.5h4.8"/></svg>'
+)
+SVG_LIXEIRA = (
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"'
+    ' stroke-linecap="round" stroke-linejoin="round">'
+    '<path d="M4 7h16"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>'
+    '<path d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12"/>'
+    '<path d="M10.5 11.5v6"/><path d="M13.5 11.5v6"/></svg>'
+)
+SVG_GRAFICO = (
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"'
+    ' stroke-linecap="round" stroke-linejoin="round">'
+    '<path d="M4 20h16"/><path d="M6.5 20v-6"/><path d="M11 20V9"/>'
+    '<path d="M15.5 20v-8"/><path d="M20 20V5"/></svg>'
+)
+SVG_FOLHA = (
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"'
+    ' stroke-linecap="round" stroke-linejoin="round">'
+    '<path d="M20 4c0 9-5 14-11 14-2 0-4-1-4-1S6 6 20 4z"/>'
+    '<path d="M5 21c1-6 4-10 9-13"/></svg>'
+)
+SVG_PESSOAS = (
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"'
+    ' stroke-linecap="round" stroke-linejoin="round">'
+    '<circle cx="9" cy="8.5" r="3"/><path d="M3.5 19c0-3 2.5-5 5.5-5s5.5 2 5.5 5"/>'
+    '<circle cx="17" cy="9.5" r="2.3"/><path d="M15 14.6c3 .2 5.5 2 5.5 4.4"/></svg>'
+)
+SVG_ESCUDO = (
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"'
+    ' stroke-linecap="round" stroke-linejoin="round">'
+    '<path d="M12 3l7 3v6c0 4.2-2.9 7.6-7 9-4.1-1.4-7-4.8-7-9V6z"/>'
+    '<path d="M9 12l2.2 2.2L15.5 10"/></svg>'
+)
+SVG_GOTA = (
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"'
+    ' stroke-linecap="round" stroke-linejoin="round">'
+    '<path d="M12 3.5c3.4 4 5.5 6.7 5.5 9.4a5.5 5.5 0 0 1-11 0c0-2.7 2.1-5.4 5.5-9.4z"/>'
+    '</svg>'
+)
+
+PILARES = [
+    (SVG_FOLHA, "AMBIENTAL", VERDE,
+     "Cuidamos do meio ambiente hoje para preservar o amanhã."),
+    (SVG_PESSOAS, "SOCIAL", LARANJA,
+     "Valorizamos pessoas, promovemos segurança e desenvolvimento comunidades."),
+    (SVG_ESCUDO, "GOVERNANÇA", VERDE,
+     "Atuamos com ética, transparência e responsabilidade em todas as nossas relações."),
+]
+
+CARDS_MENU = [
+    ("consumos", "CONSUMOS E<br>SERVIÇOS", SVG_RECICLAR, "verde",
+     "Acompanhe os consumos e serviços relacionados à sustentabilidade."),
+    ("licencas", "CONTROLE DE<br>LICENÇAS", SVG_DOCUMENTO, "laranja",
+     "Gerencie e acompanhe as licenças e documentações ambientais."),
+    ("custos", "CUSTOS E<br>ORÇAMENTOS", SVG_MOEDAS, "laranja",
+     "Visualize custos, orçamentos e investimentos em iniciativas sustentáveis."),
+    ("reciclaveis", "RECICLÁVEIS", SVG_LIXEIRA, "verde",
+     "Acompanhe a gestão de resíduos e o destino dos materiais recicláveis."),
+    ("indicador", "INDICADOR<br>SUSTENTABILIDADE", SVG_GRAFICO, "verde",
+     "Indicadores de desempenho ESG para uma gestão mais eficiente."),
+]
+
+RODAPE_ITENS = [
+    (SVG_FOLHA, "Menos Emissões"),
+    (SVG_RECICLAR, "Uso Consciente<br>de Recursos"),
+    (SVG_GOTA, "Preservação<br>da Água"),
+    (SVG_PESSOAS, "Pessoas e Comunidades<br>em Primeiro Lugar"),
+    (SVG_ESCUDO, "Ética e<br>Transparência"),
+]
+
+CSS_MENU = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap');
+
+/* A arte entra inteira (100% auto), sem degradê por cima: ela já traz a
+   área creme à esquerda, o logo, o selo ESG e as formas verdes. Um degradê
+   claro aqui apagava justamente o logo. O que garante a leitura dos cards
+   sobre o caminhão é o fundo opaco deles. */
+.stApp {
+    background:
+        url("URL_DO_FUNDO") top center / 100% auto no-repeat,
+        #FAFAF7 !important;
+}
+header, [data-testid="stHeader"] { background: transparent !important; }
+[data-testid="stToolbar"] { right: 1rem; }
+/* o topo precisa desse respiro: abaixo dele fica o logo, que é parte da arte */
+.block-container {
+    padding-top: 7.5rem !important;
+    padding-bottom: 2rem !important;
+    max-width: 1250px;
+}
+
+.dv-menu, .dv-menu * { font-family: 'Poppins', 'Segoe UI', sans-serif; }
+.dv-menu { color: #3C4B42; }
+
+/* ---------- cabeçalho ---------- */
+.dv-cabecalho {
+    display: flex; flex-wrap: wrap; gap: 26px 56px;
+    align-items: flex-start; justify-content: space-between;
+    margin: 0 0 12px;
+}
+.dv-menu .dv-eyebrow {
+    font-size: 1.35rem; font-weight: 300; color: #52645A;
+    margin: 0; line-height: 1.1;
+}
+.dv-menu .dv-titulo {
+    font-size: 2.6rem; font-weight: 700; color: #1F7A3D;
+    margin: -2px 0 10px; line-height: 1.05; letter-spacing: -0.5px;
+}
+.dv-menu .dv-bemvindo { font-size: 0.9rem; color: #52645A; margin: 0 0 10px; }
+.dv-menu .dv-bemvindo a { color: #E4610A; text-decoration: none; }
+.dv-menu .dv-acesso {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-size: 0.8rem; color: #52645A; margin: 0;
+    background: rgba(255,255,255,0.78); border: 1px solid #DCE5DD;
+    border-radius: 999px; padding: 5px 13px;
+}
+.dv-acesso svg { width: 15px; height: 15px; color: #1F7A3D; }
+
+/* ---------- pilares ESG ---------- */
+.dv-pilares { display: flex; gap: 26px; flex-wrap: wrap; padding-top: 6px; }
+.dv-pilar { display: flex; gap: 10px; max-width: 185px; }
+.dv-pilar-bolha {
+    flex: 0 0 auto; width: 36px; height: 36px; border-radius: 50%;
+    display: grid; place-items: center; background: #EAF3EC;
+}
+.dv-pilar-bolha svg { width: 20px; height: 20px; }
+.dv-pilar h4 {
+    font-size: 0.78rem; font-weight: 700; letter-spacing: 0.06em;
+    margin: 2px 0 3px;
+}
+.dv-menu .dv-pilar p { font-size: 0.7rem; line-height: 1.4; color: #6B7A70; margin: 0; }
+
+/* ---------- chamada ---------- */
+.dv-menu .dv-compromisso {
+    font-size: 1.28rem; font-weight: 300; color: #52645A;
+    margin: 2px 0 12px; line-height: 1.25;
+}
+.dv-menu .dv-compromisso b { color: #E4610A; font-weight: 600; }
+
+/* ---------- cards ---------- */
+.dv-cards {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px; max-width: 660px; margin-bottom: 16px;
+}
+.dv-card {
+    display: block; position: relative; text-decoration: none !important;
+    background: rgba(255,255,255,0.96); border: 1px solid #E3EAE4;
+    border-radius: 14px; padding: 14px 18px 28px;
+    transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease;
+}
+.dv-card:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 10px 26px rgba(31,122,61,0.14);
+    border-color: #1F7A3D;
+}
+.dv-card.laranja:hover { border-color: #E4610A; box-shadow: 0 10px 26px rgba(228,97,10,0.16); }
+.dv-card-topo { display: flex; gap: 13px; align-items: flex-start; }
+.dv-card-bolha {
+    flex: 0 0 auto; width: 42px; height: 42px; border-radius: 50%;
+    display: grid; place-items: center; background: #EAF3EC; color: #1F7A3D;
+}
+.dv-card.laranja .dv-card-bolha { background: #FDEEE3; color: #E4610A; }
+.dv-card-bolha svg { width: 23px; height: 23px; }
+.dv-card h3 {
+    font-size: 0.84rem; font-weight: 700; letter-spacing: 0.04em;
+    color: #1F7A3D; margin: 2px 0 6px; line-height: 1.25;
+}
+.dv-card.laranja h3 { color: #E4610A; }
+.dv-menu .dv-card p { font-size: 0.74rem; line-height: 1.45; color: #6B7A70; margin: 0; }
+.dv-card-seta {
+    position: absolute; right: 18px; bottom: 12px;
+    font-size: 1.05rem; color: #1F7A3D; line-height: 1;
+}
+.dv-card.laranja .dv-card-seta { color: #E4610A; }
+
+/* ---------- faixa de compromissos ---------- */
+.dv-faixa {
+    background: rgba(255,255,255,0.94); border: 1px solid #E3EAE4;
+    border-radius: 16px; padding: 12px 18px 14px; max-width: 720px;
+}
+.dv-menu .dv-faixa-titulo {
+    text-align: center; font-size: 0.88rem; font-weight: 600;
+    letter-spacing: 0.05em; color: #14532D; margin: 0 0 12px;
+}
+.dv-menu .dv-faixa-titulo b { color: #E4610A; font-weight: 700; }
+.dv-faixa-itens {
+    display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+}
+.dv-faixa-item { text-align: center; flex: 1 1 110px; color: #1F7A3D; }
+.dv-faixa-item svg { width: 25px; height: 25px; }
+.dv-menu .dv-faixa-item span {
+    display: block; margin-top: 5px; font-size: 0.67rem;
+    line-height: 1.3; color: #6B7A70;
+}
+
+/* ---------- telas estreitas ---------- */
+/* A arte é 16:9: encolhida, o caminhão avança sobre o texto e o logo fica
+   ilegível. Abaixo de 980px ela sai e entra só o logo no canto. */
+@media (max-width: 980px) {
+    .stApp {
+        background:
+            url("URL_DO_LOGO") 22px 18px / 160px auto no-repeat,
+            #FAFAF7 !important;
+    }
+    .block-container { padding-top: 5.5rem !important; }
+    .dv-menu .dv-titulo { font-size: 2.1rem; }
+    .dv-cards { grid-template-columns: 1fr; }
+}
+</style>
+"""
+
+def html_pilares() -> str:
+    partes = []
+    for icone, nome, cor, texto in PILARES:
+        partes.append(
+            '<div class="dv-pilar">'
+            f'<div class="dv-pilar-bolha" style="color:{cor}">{icone}</div>'
+            f'<div><h4 style="color:{cor}">{nome}</h4><p>{texto}</p></div>'
+            "</div>"
+        )
+    return '<div class="dv-pilares">' + "".join(partes) + "</div>"
+
+
+def html_cards() -> str:
+    partes = []
+    for tela, titulo, icone, cor, descricao in CARDS_MENU:
+        partes.append(
+            f'<a class="dv-card {cor}" href="?tela={tela}" target="_self">'
+            '<div class="dv-card-topo">'
+            f'<div class="dv-card-bolha">{icone}</div>'
+            f"<div><h3>{titulo}</h3><p>{descricao}</p></div>"
+            "</div>"
+            '<span class="dv-card-seta">&#8594;</span>'
+            "</a>"
+        )
+    return '<div class="dv-cards">' + "".join(partes) + "</div>"
+
+
+def html_rodape() -> str:
+    itens = "".join(
+        f'<div class="dv-faixa-item">{icone}<span>{texto}</span></div>'
+        for icone, texto in RODAPE_ITENS
+    )
+    return (
+        '<div class="dv-faixa">'
+        '<p class="dv-faixa-titulo">JUNTOS, <b>MOVEMOS</b> UM FUTURO MELHOR.</p>'
+        f'<div class="dv-faixa-itens">{itens}</div>'
+        "</div>"
+    )
+
+
+def tela_menu() -> None:
+    estilo = CSS_MENU.replace("URL_DO_FUNDO", URL_FUNDO_MENU).replace(
+        "URL_DO_LOGO", URL_LOGO_COLORIDO
+    )
+    st.markdown(estilo, unsafe_allow_html=True)
+
+    escopo = (
+        "todas as filiais"
+        if PERFIL["admin"]
+        else ", ".join(PERFIL["filiais"]) or "nenhuma filial"
+    )
 
     url_sb, key_sb = credenciais_supabase()
     if not url_sb or not key_sb:
@@ -696,20 +1043,145 @@ def tela_menu() -> None:
             "nenhuma tela vai gravar."
         )
 
-    st.divider()
+    st.markdown(
+        '<div class="dv-menu">'
+        '<div class="dv-cabecalho"><div>'
+        '<p class="dv-eyebrow">Painel de</p>'
+        '<h1 class="dv-titulo">Sustentabilidade</h1>'
+        f'<p class="dv-bemvindo">Bem-vindo(a), {user_name} — '
+        f'<a href="mailto:{usuario_email_logado}">{usuario_email_logado}</a></p>'
+        f'<p class="dv-acesso">{SVG_PESSOAS} Acesso: {escopo}</p>'
+        "</div>"
+        f"{html_pilares()}"
+        "</div>"
+        '<p class="dv-compromisso">Nosso compromisso,<br><b>nosso caminho.</b></p>'
+        f"{html_cards()}"
+        f"{html_rodape()}"
+        "</div>",
+        unsafe_allow_html=True,
+    )
 
-    c1, c2 = st.columns(2, gap="large")
-    with c1:
-        st.button(TELAS["consumos"], key="btn_consumos", on_click=ir_para, args=("consumos",))
-        st.button(TELAS["custos"], key="btn_custos", on_click=ir_para, args=("custos",))
-        st.button(TELAS["indicador"], key="btn_indicador", on_click=ir_para, args=("indicador",))
-    with c2:
-        st.button(TELAS["licencas"], key="btn_licencas", on_click=ir_para, args=("licencas",))
-        st.button(TELAS["reciclaveis"], key="btn_reciclaveis", on_click=ir_para, args=("reciclaveis",))
+
+CSS_INTERNO = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap');
+
+/* Fundo claro nas telas de lançamento: sem a foto, que competiria com o
+   formulário. A faixa verde no topo mantém a identidade do menu. */
+.stApp {
+    background: #F6F8F4 !important;
+}
+.stApp::before {
+    content: ""; position: fixed; top: 0; left: 0; right: 0; height: 5px;
+    background: linear-gradient(90deg, #1F7A3D 0%, #3F9D5A 55%, #E4610A 100%);
+    z-index: 999;
+}
+header, [data-testid="stHeader"] { background: transparent !important; }
+.block-container { padding-top: 2.6rem !important; max-width: 1250px; }
+
+html, body, [class*="css"], .stMarkdown, label, input, textarea, select,
+button, .stSelectbox, [data-testid="stMetricValue"] {
+    font-family: 'Poppins', 'Segoe UI', sans-serif !important;
+}
+
+/* títulos das telas */
+.stMarkdown h2 {
+    color: #1F7A3D !important; font-weight: 700 !important;
+    letter-spacing: -0.3px; font-size: 1.55rem !important;
+}
+.stMarkdown h3, .stMarkdown h4 { color: #14532D !important; font-weight: 600 !important; }
+.stMarkdown p, .stMarkdown li, [data-testid="stCaptionContainer"] { color: #4A5A50; }
+hr { border-color: #DCE5DD !important; }
+
+/* rótulos de campo — forçados porque o visitante pode estar no tema escuro */
+label, [data-testid="stWidgetLabel"] p {
+    color: #3C4B42 !important; font-size: 0.78rem !important;
+    font-weight: 600 !important; letter-spacing: 0.02em;
+}
+
+/* campos */
+[data-baseweb="input"], [data-baseweb="select"] > div, [data-baseweb="textarea"] {
+    background: #FFFFFF !important;
+    border-color: #DCE5DD !important;
+    border-radius: 9px !important;
+}
+[data-baseweb="input"] input, [data-baseweb="textarea"] textarea,
+[data-baseweb="select"] div { color: #2C3A32 !important; }
+[data-baseweb="input"]:focus-within, [data-baseweb="select"] > div:focus-within {
+    border-color: #1F7A3D !important; box-shadow: 0 0 0 2px rgba(31,122,61,0.12) !important;
+}
+
+/* abas */
+[data-testid="stTabs"] [data-baseweb="tab-list"] {
+    gap: 4px; background: transparent; border-bottom: 1px solid #DCE5DD;
+}
+[data-testid="stTabs"] [data-baseweb="tab"] {
+    background: transparent !important; border-radius: 9px 9px 0 0;
+    padding: 8px 16px !important; color: #6B7A70 !important;
+    font-weight: 600 !important; font-size: 0.84rem !important;
+}
+[data-testid="stTabs"] [aria-selected="true"] {
+    background: #FFFFFF !important; color: #1F7A3D !important;
+    border: 1px solid #DCE5DD !important; border-bottom-color: #FFFFFF !important;
+}
+[data-testid="stTabs"] [data-baseweb="tab-highlight"] { background: #1F7A3D !important; }
+
+/* botões: o estilo antigo era um bloco escuro de largura total, feito para
+   os tiles do menu antigo — que não existem mais */
+div[data-testid="stButton"] > button {
+    background: #FFFFFF !important; color: #1F7A3D !important;
+    border: 1px solid #C9DACE !important; border-radius: 10px !important;
+    padding: 0.45em 1.1em !important; width: auto !important;
+    font-weight: 600 !important; font-size: 0.84rem !important;
+    box-shadow: none !important; transition: 0.15s ease;
+}
+div[data-testid="stButton"] > button:hover {
+    background: #EAF3EC !important; border-color: #1F7A3D !important;
+    transform: none !important;
+}
+div[data-testid="stButton"] > button[kind="primary"] {
+    background: #1F7A3D !important; color: #FFFFFF !important;
+    border-color: #1F7A3D !important;
+}
+div[data-testid="stButton"] > button[kind="primary"]:hover {
+    background: #14532D !important; border-color: #14532D !important;
+}
+div[data-testid="stButton"] > button:disabled {
+    background: #F1F4F1 !important; color: #A9B5AD !important;
+    border-color: #E3EAE4 !important;
+}
+div[data-testid="stButton"] > button:focus-visible {
+    outline: 2px solid #E4610A !important; outline-offset: 2px;
+}
+
+/* tabela */
+[data-testid="stDataFrame"] {
+    border: 1px solid #DCE5DD !important; border-radius: 10px; overflow: hidden;
+}
+
+/* mensagens e blocos */
+[data-testid="stMetric"] {
+    background: #FFFFFF; border: 1px solid #DCE5DD; border-radius: 12px;
+    padding: 10px 14px;
+}
+[data-testid="stMetricValue"] { color: #1F7A3D !important; }
+[data-testid="stExpander"] {
+    background: #FFFFFF; border: 1px solid #DCE5DD !important; border-radius: 10px;
+}
+[data-testid="stFileUploaderDropzone"] {
+    background: #FFFFFF !important; border: 1px dashed #C9DACE !important;
+}
+</style>
+"""
 
 
 def cabecalho_tela(chave: str) -> None:
-    """Título da tela + botão de retorno ao menu."""
+    """Título da tela + botão de retorno ao menu.
+
+    Também injeta o CSS interno: toda tela de lançamento passa por aqui.
+    """
+    st.markdown(CSS_INTERNO, unsafe_allow_html=True)
+
     esq, dir_ = st.columns([6, 1])
     with esq:
         st.markdown(f"## {TELAS[chave]}")
@@ -806,7 +1278,7 @@ def form_consumos() -> None:
         st.number_input("ÁGUA", min_value=0.0, step=0.01, format="%.2f", key="con_agua")
         st.number_input("MADEIRA", min_value=0.0, step=0.01, format="%.2f", key="con_madeira")
 
-    st.button("💾 Salvar", key="btn_salvar_con", on_click=salvar_consumo)
+    st.button("💾 Salvar", key="btn_salvar_con", on_click=salvar_consumo, type="primary")
     render_msg("msg_consumos")
 
 
@@ -919,7 +1391,13 @@ def form_licencas() -> None:
             else:
                 st.success(f"📎 {arquivo.name} · {arquivo.size / 1024:,.1f} KB")
 
-    st.button("💾 Salvar", key="btn_salvar_lic", on_click=salvar_licenca, disabled=arquivo is None)
+    st.button(
+        "💾 Salvar",
+        key="btn_salvar_lic",
+        on_click=salvar_licenca,
+        disabled=arquivo is None,
+        type="primary",
+    )
     if arquivo is None:
         st.caption("Anexe a Licença para liberar o Salvar.")
 
@@ -995,7 +1473,7 @@ def form_custos() -> None:
     with c6:
         st.selectbox("SETOR", OPCOES_SETOR, key="cus_setor")
 
-    st.button("💾 Salvar", key="btn_salvar_cus", on_click=salvar_custo)
+    st.button("💾 Salvar", key="btn_salvar_cus", on_click=salvar_custo, type="primary")
     render_msg("msg_custos")
 
 
@@ -1048,7 +1526,7 @@ def form_reciclaveis() -> None:
         st.selectbox("PAGAMENTO", OPCOES_PAGAMENTO, key="rec_pagamento")
         st.metric("TOTAL", fmt_brl(peso * valor_kg))
 
-    st.button("💾 Salvar", key="btn_salvar_rec", on_click=salvar_reciclaveis)
+    st.button("💾 Salvar", key="btn_salvar_rec", on_click=salvar_reciclaveis, type="primary")
     render_msg("msg_reciclaveis")
 
 
@@ -1546,6 +2024,7 @@ def painel_edicao(tabela_app: str, limite: int = LIMITE_REGISTROS) -> None:
             "💾 Salvar alterações",
             key=f"btn_salvar_ed_{tabela_app}_{versao}",
             disabled=not mudancas,
+            type="primary",
             on_click=salvar_edicao,
             args=(tabela_app, id_registro, registro, mudancas, chave_msg, chave_versao),
         )
@@ -1704,4 +2183,19 @@ ROTAS = {
     "indicador": tela_indicador,
 }
 
+def absorve_tela_da_url() -> None:
+    """Os cards do menu navegam por ?tela=...; aqui isso vira estado da sessão.
+
+    O parâmetro é apagado em seguida: se ficasse na URL, ele venceria o
+    session_state a cada rerun e o botão Voltar não sairia da tela.
+    """
+    escolhida = st.query_params.get("tela")
+    if not escolhida:
+        return
+    if escolhida in ROTAS:
+        st.session_state["tela"] = escolhida
+    del st.query_params["tela"]
+
+
+absorve_tela_da_url()
 ROTAS.get(st.session_state["tela"], tela_menu)()
