@@ -1189,6 +1189,21 @@ div[data-testid="stButton"] button:focus-visible {
     outline: 2px solid #E4610A !important; outline-offset: 2px;
 }
 
+/* barra lateral de páginas (tela de indicadores) */
+[data-testid="stSidebar"] {
+    background: #FFFFFF !important; border-right: 1px solid #DCE5DD;
+}
+[data-testid="stSidebar"] .dv-sidebar-titulo {
+    font-size: 0.72rem; font-weight: 700; letter-spacing: 0.12em;
+    text-transform: uppercase; color: #6B7A70; margin: 0 0 10px;
+}
+/* itens de navegação: texto à esquerda, como lista, não como botão */
+[data-testid="stSidebar"] div[data-testid="stButton"] button {
+    justify-content: flex-start !important; text-align: left !important;
+    border-radius: 8px !important; font-size: 0.82rem !important;
+    padding: 0.45em 0.8em !important; margin-bottom: 3px !important;
+}
+
 /* tabela */
 [data-testid="stDataFrame"] {
     border: 1px solid #DCE5DD !important; border-radius: 10px; overflow: hidden;
@@ -2201,9 +2216,238 @@ def tela_reciclaveis() -> None:
 # ================================================
 # 5) INDICADOR SUSTENTABILIDADE
 # ================================================
+# A tela tem navegação própria numa barra à esquerda (st.sidebar), uma
+# página por assunto. Cada página abre com o relatório: filtros de
+# segmentação, a tabela e o botão de extração em XLSX.
+#
+# A página ativa é marcada com type="primary" — o mesmo verde cheio dos
+# botões de gravar. É o único jeito de destacar um botão específico sem
+# depender da classe st-key-*, que só existe em versões recentes.
+
+PAGINAS_INDICADOR = {
+    "consumos": "Consumos e Serviços",
+    "licencas": "Licenças",
+    "custos": "Custos e Orçamentos",
+    "reciclaveis": "Recicláveis",
+}
+
+# Colunas oferecidas como filtro em cada página, na ordem em que aparecem.
+# "multi" = multiselect com os valores existentes; "mes" = multiselect que
+# mostra nome do mês mas filtra pelo valor gravado (int ou texto).
+FILTROS_RELATORIO = {
+    "consumos": [("FILIAL", "multi"), ("ANO", "multi"), ("MES", "mes")],
+    "licencas": [("FILIAL", "multi"), ("CATEGORIA", "multi"), ("STATUS", "multi")],
+    "custos": [
+        ("FILIAL", "multi"),
+        ("FORNECEDOR", "multi"),
+        ("SETOR", "multi"),
+        ("MES", "mes"),
+    ],
+    "reciclaveis": [("FILIAL", "multi"), ("MATERIAL", "multi"), ("PAGAMENTO", "multi")],
+}
+
+# Coluna de data para o filtro de período, quando a tabela tem uma
+PERIODO_RELATORIO = {"reciclaveis": "DATA"}
+
+# Somas exibidas acima da tabela: (coluna, rótulo, formato)
+RESUMOS_RELATORIO = {
+    "consumos": [
+        (COL_SOLIDOS, "Sólidos contaminados", "num"),
+        ("AGUA", "Água", "num"),
+        ("ENERGIA", "Energia", "num"),
+    ],
+    "licencas": [],
+    "custos": [("VALOR", "Valor total", "brl")],
+    "reciclaveis": [("PESO", "Peso total (kg)", "num"), ("TOTAL", "Receita", "brl")],
+}
+
+
+def fmt_num(valor: float) -> str:
+    texto = f"{valor:,.2f}".replace(",", "#").replace(".", ",").replace("#", ".")
+    return texto
+
+
+def para_xlsx(df: pd.DataFrame, aba: str):
+    """DataFrame -> bytes de um .xlsx. Devolve (bytes, erro).
+
+    Depende de openpyxl, que é dependência do pandas para Excel e pode não
+    estar no requirements.txt. Em vez de estourar na tela, devolve o erro
+    para a chamada oferecer CSV.
+    """
+    try:
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine="openpyxl") as escritor:
+            df.to_excel(escritor, index=False, sheet_name=aba[:31])
+        return buffer.getvalue(), None
+    except Exception as erro:
+        return None, str(erro)
+
+
+def filtros_relatorio(pagina: str, df: pd.DataFrame) -> pd.DataFrame:
+    """Multiselects de segmentação + período. Vazio = não filtra."""
+    especificacao = [
+        (col, tipo)
+        for col, tipo in FILTROS_RELATORIO.get(pagina, [])
+        if col in df.columns
+    ]
+    coluna_data = PERIODO_RELATORIO.get(pagina)
+    tem_periodo = coluna_data in df.columns if coluna_data else False
+
+    filtrado = df
+    caixas = st.columns(len(especificacao) + (1 if tem_periodo else 0) or 1)
+
+    for i, (coluna, tipo) in enumerate(especificacao):
+        if tipo == "mes":
+            # a coluna guarda 9 ou "Setembro" conforme a tabela; o rótulo é
+            # sempre o nome, e o filtro compara pelo valor original
+            mapa = {}
+            for bruto in filtrado[coluna]:
+                texto = texto_celula(bruto)
+                if texto:
+                    mapa.setdefault(nome_mes(texto) or texto, set()).add(texto)
+
+            rotulos = sorted(mapa, key=lambda n: MESES.index(n) if n in MESES else 99)
+            with caixas[i]:
+                escolhidos = st.multiselect(coluna, rotulos, key=f"rel_{pagina}_{coluna}")
+            if escolhidos:
+                aceitos = {v for r in escolhidos for v in mapa[r]}
+                filtrado = filtrado[filtrado[coluna].map(texto_celula).isin(aceitos)]
+            continue
+
+        valores = sorted({texto_celula(v) for v in filtrado[coluna]} - {""})
+        with caixas[i]:
+            escolhidos = st.multiselect(coluna, valores, key=f"rel_{pagina}_{coluna}")
+        if escolhidos:
+            filtrado = filtrado[filtrado[coluna].map(texto_celula).isin(escolhidos)]
+
+    if tem_periodo:
+        datas = [d for d in (para_data(v) for v in filtrado[coluna_data]) if d]
+        with caixas[-1]:
+            if datas:
+                periodo = st.date_input(
+                    f"{coluna_data} (período)",
+                    value=(min(datas), max(datas)),
+                    format="DD/MM/YYYY",
+                    key=f"rel_{pagina}_periodo",
+                )
+            else:
+                periodo = None
+                st.caption(f"Sem {coluna_data} para filtrar")
+        if isinstance(periodo, (tuple, list)) and len(periodo) == 2:
+            inicio, fim = periodo
+            dentro = filtrado[coluna_data].map(
+                lambda v: (para_data(v) is not None) and (inicio <= para_data(v) <= fim)
+            )
+            filtrado = filtrado[dentro]
+
+    return filtrado
+
+
+def barra_paginas() -> str:
+    """Navegação da tela de indicadores, na lateral esquerda."""
+    st.session_state.setdefault("ind_pagina", "consumos")
+
+    with st.sidebar:
+        st.markdown('<p class="dv-sidebar-titulo">Páginas</p>', unsafe_allow_html=True)
+        for chave, nome in PAGINAS_INDICADOR.items():
+            ativa = st.session_state["ind_pagina"] == chave
+            st.button(
+                nome,
+                key=f"ind_pg_{chave}",
+                use_container_width=True,
+                type="primary" if ativa else "secondary",
+                on_click=lambda c=chave: st.session_state.__setitem__("ind_pagina", c),
+            )
+        st.divider()
+        st.caption(
+            "Acesso: todas as filiais"
+            if PERFIL["admin"]
+            else "Filiais: " + ", ".join(PERFIL["filiais"])
+        )
+
+    return st.session_state["ind_pagina"]
+
+
+def pagina_relatorio(pagina: str) -> None:
+    nome = PAGINAS_INDICADOR[pagina]
+    st.markdown(f"### {nome}")
+
+    try:
+        df = listar_registros(pagina)
+    except Exception as erro:
+        st.error(f"Não foi possível ler {TABELAS_DB[pagina]}: {erro}")
+        return
+
+    if df.empty:
+        st.info("Nenhum registro para relatar.")
+        return
+
+    filtrado = filtros_relatorio(pagina, df)
+
+    if filtrado.empty:
+        st.warning("Nenhum registro com esses filtros.")
+        st.caption(f"{len(df)} registro(s) na base.")
+        return
+
+    # ---- somas ----
+    resumos = [
+        (col, rotulo, formato)
+        for col, rotulo, formato in RESUMOS_RELATORIO.get(pagina, [])
+        if col in filtrado.columns
+    ]
+    caixas = st.columns(len(resumos) + 1)
+    with caixas[0]:
+        st.metric("Registros", f"{len(filtrado)}")
+    for i, (col, rotulo, formato) in enumerate(resumos, start=1):
+        soma = pd.to_numeric(filtrado[col], errors="coerce").fillna(0).sum()
+        with caixas[i]:
+            st.metric(rotulo, fmt_brl(soma) if formato == "brl" else fmt_num(soma))
+
+    st.dataframe(filtrado, hide_index=True, height=380)
+    if len(filtrado) == len(df):
+        st.caption(f"{len(df)} registro(s).")
+    else:
+        st.caption(f"{len(filtrado)} de {len(df)} registro(s) — filtro aplicado.")
+
+    # ---- extração ----
+    marca = datetime.now().strftime("%Y%m%d_%H%M")
+    conteudo, erro = para_xlsx(filtrado, nome)
+    esq, dir_ = st.columns([1, 3])
+    if conteudo is not None:
+        with esq:
+            st.download_button(
+                "⬇️ Extrair XLSX",
+                data=conteudo,
+                file_name=f"{TABELAS_DB[pagina]}_{marca}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary",
+                use_container_width=True,
+            )
+        with dir_:
+            st.caption("O arquivo sai exatamente com as linhas filtradas acima.")
+    else:
+        # sem openpyxl não há xlsx; CSV resolve sem depender de biblioteca
+        with esq:
+            st.download_button(
+                "⬇️ Extrair CSV",
+                data=filtrado.to_csv(index=False, sep=";").encode("utf-8-sig"),
+                file_name=f"{TABELAS_DB[pagina]}_{marca}.csv",
+                mime="text/csv",
+                type="primary",
+                use_container_width=True,
+            )
+        with dir_:
+            st.warning(
+                "XLSX indisponível: falta o pacote **openpyxl** no "
+                f"requirements.txt. Enquanto isso, o CSV sai com separador "
+                f"`;` e acentuação correta no Excel. ({erro})"
+            )
+
+
 def tela_indicador() -> None:
     cabecalho_tela("indicador")
-    st.info("Tela em construção — visualização do indicador.")
+    pagina = barra_paginas()
+    pagina_relatorio(pagina)
 
 
 # ================================================
