@@ -2,6 +2,7 @@ streamlit
 pandas
 supabase
 minio==7.1.2
+openpyxl
 pyarrow
 python-dotenv
 requests-oauthlib
