@@ -2249,6 +2249,49 @@ FILTROS_RELATORIO = {
 # Coluna de data para o filtro de período, quando a tabela tem uma
 PERIODO_RELATORIO = {"reciclaveis": "DATA"}
 
+# Ordem de leitura do relatório: estas colunas vêm primeiro, o resto entra
+# depois na ordem em que o Supabase devolveu. Sem isso, ANO e MES ficavam no
+# fim da tabela de consumos (é a ordem em que foram criadas), fora da tela.
+COLUNAS_PRIMEIRO = {
+    "consumos": ("FILIAL", "ANO", "MES"),
+    "licencas": (
+        "FILIAL",
+        "LICENCA",
+        "CATEGORIA",
+        "STATUS",
+        COL_DT_VENCIMENTO,
+        COL_DIAS,
+        "CNPJ",
+        "ROTA",
+    ),
+    "custos": ("FILIAL", "FORNECEDOR", "SETOR", "MES", "VALOR", "NOTA_BOLETO"),
+    "reciclaveis": (
+        "FILIAL",
+        "DATA",
+        "MATERIAL",
+        "PESO",
+        "VALOR_KG",
+        "TOTAL",
+        "PAGAMENTO",
+    ),
+}
+
+# auditoria é útil, mas no fim: não é o assunto do relatório
+COLUNAS_FIM = ("DATA_CRIACAO", "USUARIO")
+
+# "id" é chave técnica do banco, não informação de relatório
+COLUNAS_FORA = ("id",)
+
+
+def colunas_relatorio(pagina: str, df: pd.DataFrame) -> pd.DataFrame:
+    """Reordena para leitura humana e descarta a chave técnica."""
+    disponiveis = [c for c in df.columns if c not in COLUNAS_FORA]
+    primeiro = [c for c in COLUNAS_PRIMEIRO.get(pagina, ()) if c in disponiveis]
+    fim = [c for c in COLUNAS_FIM if c in disponiveis]
+    meio = [c for c in disponiveis if c not in primeiro and c not in fim]
+    return df[primeiro + meio + fim]
+
+
 # Somas exibidas acima da tabela: (coluna, rótulo, formato)
 RESUMOS_RELATORIO = {
     "consumos": [
@@ -2388,6 +2431,10 @@ def pagina_relatorio(pagina: str) -> None:
         st.warning("Nenhum registro com esses filtros.")
         st.caption(f"{len(df)} registro(s) na base.")
         return
+
+    # o filtro de período usa a coluna de data crua, então a reordenação
+    # (e o descarte do id) vem só agora
+    filtrado = colunas_relatorio(pagina, filtrado)
 
     # ---- somas ----
     resumos = [
