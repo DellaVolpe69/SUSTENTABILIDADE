@@ -835,11 +835,14 @@ header, [data-testid="stHeader"] { background: transparent !important; }
    para o meio da tela */
 .block-container {
     max-width: 100% !important;
-    padding: 7.5rem 2rem 2rem 3.2rem !important;
+    /* 8vw acompanha o logo, que escala com a largura; +30px de respiro */
+    padding: calc(8vw + 30px) 2.5rem 2rem 3.2rem !important;
 }
-.dv-menu { max-width: 1180px; }
-/* o título precisa de largura fixa, senão os pilares o comprimem a zero */
-.dv-menu .dv-cabecalho > div:first-child { flex: 0 0 360px; }
+.dv-menu { max-width: min(1180px, 100%); }
+/* o título precisa de largura própria, senão os pilares o comprimem a
+   zero; nowrap impede a quebra feia de "Sustentabilidade" */
+.dv-menu .dv-cabecalho > div:first-child { flex: 0 1 430px; min-width: 300px; }
+.dv-menu .dv-titulo { white-space: nowrap; }
 
 /* card e botão são dois elementos do Streamlit: sem zerar o espaço entre
    eles ficaria uma fenda no meio do card. Vale para a tela toda porque
@@ -908,7 +911,10 @@ header, [data-testid="stHeader"] { background: transparent !important; }
     background: rgba(255,255,255,0.96);
     border: 1px solid #E3EAE4; border-bottom: none;
     border-radius: 14px 14px 0 0;
-    padding: 15px 18px 8px; min-height: 112px;
+    /* 18px embaixo: com 8px a descrição encostava no rodapé do card e o
+       botão, opaco, cobria a metade de baixo das letras */
+    padding: 15px 18px 18px;
+    min-height: 124px; overflow: visible;
 }
 .dv-cardtopo .dv-card-topo { display: flex; gap: 13px; align-items: flex-start; }
 .dv-cardtopo .dv-card-bolha {
@@ -924,12 +930,12 @@ header, [data-testid="stHeader"] { background: transparent !important; }
 }
 .dv-cardtopo.laranja h3 { color: #E4610A !important; }
 .dv-cardtopo p {
-    font-size: 0.74rem !important; line-height: 1.45;
-    color: #6B7A70 !important; margin: 0;
+    font-size: 0.76rem !important; line-height: 1.5;
+    color: #6B7A70 !important; margin: 0 !important;
 }
 
 /* rodapé clicável do card */
-div[data-testid="stButton"] > button {
+div[data-testid="stButton"] button {
     background: rgba(255,255,255,0.96) !important;
     color: #1F7A3D !important;
     border: 1px solid #E3EAE4 !important; border-top: none !important;
@@ -941,10 +947,12 @@ div[data-testid="stButton"] > button {
     box-shadow: none !important; transition: 0.15s ease;
     margin-bottom: 14px !important;
 }
-div[data-testid="stButton"] > button:hover {
+div[data-testid="stButton"] button:hover {
     background: #EAF3EC !important; border-color: #1F7A3D !important;
     color: #14532D !important; transform: none !important;
 }
+/* o rótulo vem embrulhado em <p>/<div>: sem isto ele ignora a cor do botão */
+div[data-testid="stButton"] button * { color: inherit !important; }
 /* cor por card: só funciona nas versões do Streamlit que expõem st-key-*.
    Onde não existir, o rodapé fica verde — sem quebrar nada. */
 .st-key-card_licencas button, .st-key-card_custos button { color: #E4610A !important; }
@@ -957,7 +965,7 @@ div[data-testid="stButton"] > button:hover {
 .dv-menu .dv-faixa {
     background: rgba(255,255,255,0.94); border: 1px solid #E3EAE4;
     border-radius: 16px; padding: 12px 18px 14px;
-    max-width: 760px; margin-top: 22px;
+    max-width: min(760px, 100%); margin-top: 22px;
 }
 .dv-menu .dv-faixa-titulo {
     text-align: center; font-size: 0.88rem !important; font-weight: 600 !important;
@@ -984,6 +992,7 @@ div[data-testid="stButton"] > button:hover {
             #FAFAF7 !important;
     }
     .block-container { padding: 5.5rem 1.2rem 2rem 1.2rem !important; }
+    .dv-menu .dv-titulo { white-space: normal; }
     .dv-menu .dv-titulo { font-size: 2.1rem !important; }
 }
 </style>
@@ -1144,29 +1153,39 @@ label, [data-testid="stWidgetLabel"] p {
 
 /* botões: o estilo antigo era um bloco escuro de largura total, feito para
    os tiles do menu antigo — que não existem mais */
-div[data-testid="stButton"] > button {
+div[data-testid="stButton"] button {
     background: #FFFFFF !important; color: #1F7A3D !important;
     border: 1px solid #C9DACE !important; border-radius: 10px !important;
     padding: 0.45em 1.1em !important; width: auto !important;
     font-weight: 600 !important; font-size: 0.84rem !important;
     box-shadow: none !important; transition: 0.15s ease;
 }
-div[data-testid="stButton"] > button:hover {
+div[data-testid="stButton"] button:hover {
     background: #EAF3EC !important; border-color: #1F7A3D !important;
     transform: none !important;
 }
-div[data-testid="stButton"] > button[kind="primary"] {
+/* o rótulo é um <p> dentro do <button>: sem herdar, ele fica preto sobre o
+   verde do botão primário */
+div[data-testid="stButton"] button * { color: inherit !important; }
+div[data-testid="stButton"] button[kind="primary"],
+div[data-testid="stButton"] button[kind="primary"] * {
     background: #1F7A3D !important; color: #FFFFFF !important;
     border-color: #1F7A3D !important;
 }
-div[data-testid="stButton"] > button[kind="primary"]:hover {
+div[data-testid="stButton"] button[kind="primary"] * { background: none !important; }
+div[data-testid="stButton"] button[kind="primary"]:hover,
+div[data-testid="stButton"] button[kind="primary"]:hover * {
     background: #14532D !important; border-color: #14532D !important;
+    color: #FFFFFF !important;
 }
-div[data-testid="stButton"] > button:disabled {
+div[data-testid="stButton"] button[kind="primary"]:hover * { background: none !important; }
+div[data-testid="stButton"] button:disabled,
+div[data-testid="stButton"] button:disabled * {
     background: #F1F4F1 !important; color: #A9B5AD !important;
     border-color: #E3EAE4 !important;
 }
-div[data-testid="stButton"] > button:focus-visible {
+div[data-testid="stButton"] button:disabled * { background: none !important; }
+div[data-testid="stButton"] button:focus-visible {
     outline: 2px solid #E4610A !important; outline-offset: 2px;
 }
 
