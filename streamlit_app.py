@@ -1205,6 +1205,12 @@ div[data-testid="stButton"] button:focus-visible {
     border-left-color: #E4610A;
     background: linear-gradient(180deg, #FFF6F0 0%, #FFFFFF 70%);
 }
+/* vencido é problema, não aviso: cor própria */
+.dv-kpi.vermelho {
+    border-left-color: #B3261E;
+    background: linear-gradient(180deg, #FDF0EF 0%, #FFFFFF 70%);
+}
+.dv-kpi.vermelho strong { color: #8C1D18 !important; }
 .dv-kpi-rotulo {
     font-size: 0.68rem !important; font-weight: 600; letter-spacing: 0.08em;
     text-transform: uppercase; color: #6B7A70 !important;
@@ -2494,9 +2500,21 @@ def aviso_sem_plotly() -> None:
 # st.metric não permite cor por cartão — todos ficariam iguais. Em HTML dá
 # controle de fundo, faixa lateral e seta, que é o que diferencia "receita"
 # de "pendente" num relance.
+# rótulo do primeiro cartão (a contagem de linhas) por página
+ROTULO_CONTAGEM = {
+    "licencas": "Total de licenças",
+    "reciclaveis": "Lançamentos",
+    "custos": "Lançamentos",
+}
+
 CARTOES_PAGINA = {
     "consumos": [],
-    "licencas": [],
+    # formato "cont" conta linhas em vez de somar uma coluna
+    "licencas": [
+        ("Vencidas", None, "cont", "vermelho", ("STATUS", "VENCIDO")),
+        ("Renovar", None, "cont", "laranja", ("STATUS", "RENOVAR")),
+        ("No prazo", None, "cont", "verde", ("STATUS", "NO PRAZO")),
+    ],
     "custos": [("Valor total", "VALOR", "brl", "verde", None)],
     "reciclaveis": [
         ("Receita total", "TOTAL", "brl", "verde", None),
@@ -2537,17 +2555,31 @@ def linha_cartoes(cartoes: list) -> None:
 
 
 def cartoes_da_pagina(pagina: str, df: pd.DataFrame) -> None:
-    cartoes = [("Registros", f"{len(df)}", "neutro", "no filtro atual")]
+    cartoes = [
+        (ROTULO_CONTAGEM.get(pagina, "Registros"), f"{len(df)}", "neutro",
+         "todos os status" if pagina == "licencas" else "no filtro atual")
+    ]
     for rotulo, coluna, formato, cor, condicao in CARTOES_PAGINA.get(pagina, []):
-        if coluna not in df.columns:
+        if formato != "cont" and coluna not in df.columns:
             continue
+
         recorte = df
         nota = ""
         if condicao is not None:
             col_cond, valor_cond = condicao
             if col_cond not in df.columns:
                 continue
-            recorte = df[df[col_cond].map(texto_celula) == valor_cond]
+            # comparação sem caixa: as linhas antigas podem ter "Vencido"
+            recorte = df[
+                df[col_cond].map(lambda v: texto_celula(v).upper()) == valor_cond.upper()
+            ]
+
+        if formato == "cont":
+            proporcao = f"{len(recorte) / len(df):.0%}" if len(df) else "0%"
+            cartoes.append((rotulo, f"{len(recorte)}", cor, f"{proporcao} do total"))
+            continue
+
+        if condicao is not None:
             nota = f"{len(recorte)} de {len(df)} lançamentos"
         soma = pd.to_numeric(recorte[coluna], errors="coerce").fillna(0).sum()
         cartoes.append((rotulo, formata_valor(soma, formato), cor, nota))
@@ -2601,6 +2633,88 @@ def com_competencia(pagina: str, df: pd.DataFrame) -> pd.DataFrame:
     return saida
 
 
+def sinal_valor(diferenca: float) -> str:
+    return ("+" if diferenca >= 0 else "−") + fmt_brl(abs(diferenca))
+
+
+def comparativo_anual(base: pd.DataFrame, coluna: str, subir_e_bom: bool = True):
+    """Ano corrente contra o anterior, restrito aos MESMOS meses.
+
+    Comparar 2026 fechado até agosto com 2025 inteiro mostraria uma queda
+    que não existe — são 8 meses contra 12. Aqui o ano anterior é recortado
+    nos meses que o ano corrente já tem.
+
+    Devolve (cartão, nota_do_periodo) ou (None, None) se não houver base.
+    """
+    if base.empty:
+        return None, None
+
+    valores = pd.to_numeric(base[coluna], errors="coerce").fillna(0)
+    trabalho = base.assign(_v=valores)
+
+    ano_atual = int(trabalho["ANO_N"].max())
+    meses_atual = sorted({int(m) for m in trabalho[trabalho["ANO_N"] == ano_atual]["MES_N"]})
+    if not meses_atual:
+        return None, None
+
+    # O mês corrente ainda está aberto: comparar 5 dias de setembro contra o
+    # setembro inteiro do ano passado inventa uma queda. Só entram meses
+    # fechados — a não ser que o ano só tenha o mês corrente.
+    hoje = date.today()
+    aberto = False
+    if ano_atual == hoje.year:
+        fechados = [m for m in meses_atual if m < hoje.month]
+        if fechados:
+            meses_atual = fechados
+        else:
+            aberto = True
+
+    do_ano = trabalho[
+        (trabalho["ANO_N"] == ano_atual) & (trabalho["MES_N"].isin(meses_atual))
+    ]
+    total_atual = do_ano["_v"].sum()
+    anterior = trabalho[
+        (trabalho["ANO_N"] == ano_atual - 1) & (trabalho["MES_N"].isin(meses_atual))
+    ]
+    total_anterior = anterior["_v"].sum()
+
+    faixa = (
+        f"{MESES[meses_atual[0] - 1][:3]}–{MESES[meses_atual[-1] - 1][:3]}"
+        if len(meses_atual) > 1
+        else MESES[meses_atual[0] - 1][:3]
+    )
+
+    if anterior.empty or total_anterior == 0:
+        return (
+            (
+                f"{ano_atual} vs {ano_atual - 1}",
+                "sem base",
+                "neutro",
+                f"nada lançado em {faixa}/{ano_atual - 1}",
+            ),
+            faixa,
+        )
+
+    diferenca = total_atual - total_anterior
+    variacao = diferenca / total_anterior
+    subiu = diferenca >= 0
+    cor = ("verde" if subiu else "laranja") if subir_e_bom else ("laranja" if subiu else "verde")
+    seta = "▲" if subiu else "▼"
+    percentual = f"{abs(variacao):.1%}".replace(".", ",")
+
+    return (
+        (
+            f"{ano_atual} vs {ano_atual - 1}",
+            f"{seta} {percentual}",
+            cor,
+            f"{sinal_valor(diferenca)} · {faixa}: "
+            f"{fmt_brl(total_atual)} contra {fmt_brl(total_anterior)}"
+            + (" · mês corrente ainda aberto" if aberto else ""),
+        ),
+        faixa,
+    )
+
+
 # ------------------------------------------------
 # Análise: Recicláveis
 # ------------------------------------------------
@@ -2616,6 +2730,15 @@ def analise_reciclaveis(df: pd.DataFrame) -> None:
 
     base["TOTAL_N"] = pd.to_numeric(base["TOTAL"], errors="coerce").fillna(0)
 
+    # receita subindo é resultado bom — o oposto de consumo
+    cartao, faixa = comparativo_anual(base, "TOTAL_N", subir_e_bom=True)
+    if cartao is not None:
+        linha_cartoes([cartao])
+        st.caption(
+            "A comparação usa os mesmos meses nos dois anos "
+            f"({faixa}), senão um ano incompleto pareceria queda."
+        )
+
     esq, dir_ = st.columns([1, 1])
 
     with esq:
@@ -2625,10 +2748,13 @@ def analise_reciclaveis(df: pd.DataFrame) -> None:
         fig.update_traces(
             texttemplate="R$ %{text:,.0f}",
             textposition="outside",
+            # sem cliponaxis o rótulo da maior barra é cortado pela borda
+            cliponaxis=False,
             hovertemplate="%{x}<br>R$ %{y:,.2f}<extra></extra>",
             marker_color=CORES_DV[0],
         )
         fig.update_xaxes(type="category")
+        fig.update_yaxes(range=[0, float(anual["TOTAL_N"].max()) * 1.18])
         st.plotly_chart(estiliza(fig), use_container_width=True)
 
     with dir_:
@@ -2643,9 +2769,13 @@ def analise_reciclaveis(df: pd.DataFrame) -> None:
         fig.update_traces(
             texttemplate="R$ %{text:,.0f}",
             textposition="outside",
+            cliponaxis=False,
             hovertemplate="%{y}<br>R$ %{x:,.2f}<extra></extra>",
             marker_color=CORES_DV[0],
         )
+        # 22% de folga à direita: era o que faltava para o rótulo do maior
+        # material caber dentro da figura
+        fig.update_xaxes(range=[0, float(por_material["TOTAL_N"].max()) * 1.22])
         altura = max(330, 26 * len(por_material) + 90)
         st.plotly_chart(estiliza(fig, altura), use_container_width=True)
 
@@ -2794,9 +2924,89 @@ def analise_consumos(df: pd.DataFrame) -> None:
     )
 
 
+# ------------------------------------------------
+# Análise: Licenças
+# ------------------------------------------------
+# Cor por significado, não pela ordem da paleta: um "VENCIDO" pintado de
+# verde porque saiu primeiro no groupby seria pior que não ter gráfico.
+CORES_STATUS = {
+    "NO PRAZO": "#1F7A3D",
+    "RENOVAR": "#E4610A",
+    "VENCIDO": "#B3261E",
+    "NÃO SE APLICA": "#9AA8A0",
+    "(sem status)": "#C9DACE",
+}
+SEM_STATUS = "(sem status)"
+
+
+def analise_licencas(df: pd.DataFrame) -> None:
+    if not TEM_PLOTLY:
+        aviso_sem_plotly()
+        return
+    if "FILIAL" not in df.columns or "STATUS" not in df.columns:
+        st.info("Faltam as colunas FILIAL e STATUS para montar o gráfico.")
+        return
+
+    base = df.copy()
+    # status vazio não pode sumir no groupby: senão a soma das barras deixa
+    # de fechar com o cartão de total
+    base["STATUS_N"] = base["STATUS"].map(
+        lambda v: texto_celula(v).upper() or SEM_STATUS
+    )
+    base["FILIAL_N"] = base["FILIAL"].map(lambda v: texto_celula(v) or "(sem filial)")
+
+    contagem = (
+        base.groupby(["FILIAL_N", "STATUS_N"]).size().reset_index(name="QTD")
+    )
+    totais = contagem.groupby("FILIAL_N", as_index=False)["QTD"].sum()
+    ordem = totais.sort_values("QTD", ascending=True)["FILIAL_N"].tolist()
+
+    st.markdown("**Licenças por filial e status**")
+    fig = px.bar(
+        contagem,
+        x="QTD",
+        y="FILIAL_N",
+        color="STATUS_N",
+        orientation="h",
+        text="QTD",
+        category_orders={"FILIAL_N": ordem, "STATUS_N": list(CORES_STATUS)},
+        color_discrete_map=CORES_STATUS,
+    )
+    fig.update_traces(
+        textposition="inside",
+        insidetextanchor="middle",
+        textfont_size=11,
+        hovertemplate="%{y}<br>%{fullData.name}: %{x}<extra></extra>",
+    )
+    fig.update_layout(barmode="stack")
+
+    # o total de cada barra, à direita — o rótulo interno é por status
+    maior = int(totais["QTD"].max())
+    for _, linha in totais.iterrows():
+        fig.add_annotation(
+            x=int(linha["QTD"]),
+            y=linha["FILIAL_N"],
+            text=f"<b>{int(linha['QTD'])}</b>",
+            showarrow=False,
+            xanchor="left",
+            xshift=6,
+            font=dict(size=11, color="#3C4B42"),
+        )
+    fig.update_xaxes(range=[0, maior * 1.12])
+
+    altura = max(340, 24 * len(ordem) + 110)
+    st.plotly_chart(estiliza(fig, altura), use_container_width=True)
+    st.caption(
+        f"{len(base)} licença(s) em {len(ordem)} filial(is). O número dentro "
+        "de cada faixa é a quantidade daquele status; o número à direita é o "
+        "total da filial."
+    )
+
+
 ANALISES = {
     "reciclaveis": analise_reciclaveis,
     "consumos": analise_consumos,
+    "licencas": analise_licencas,
 }
 
 
