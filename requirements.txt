@@ -8,4 +8,5 @@ python-dotenv
 requests-oauthlib
 office365-rest-python-client
 openpyxl
+plotly
 git+https://github.com/DellaVolpe69/Modulos.git@main
