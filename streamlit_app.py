@@ -1189,6 +1189,33 @@ div[data-testid="stButton"] button:focus-visible {
     outline: 2px solid #E4610A !important; outline-offset: 2px;
 }
 
+/* cartões de indicador: st.metric não aceita cor por cartão, então estes
+   são HTML — dá para pintar fundo, faixa lateral e o número */
+.dv-kpi {
+    background: #FFFFFF; border: 1px solid #DCE5DD;
+    border-left: 4px solid #C9DACE; border-radius: 12px;
+    padding: 12px 14px; min-height: 88px;
+    display: flex; flex-direction: column; gap: 2px;
+}
+.dv-kpi.verde {
+    border-left-color: #1F7A3D;
+    background: linear-gradient(180deg, #F4FAF5 0%, #FFFFFF 70%);
+}
+.dv-kpi.laranja {
+    border-left-color: #E4610A;
+    background: linear-gradient(180deg, #FFF6F0 0%, #FFFFFF 70%);
+}
+.dv-kpi-rotulo {
+    font-size: 0.68rem !important; font-weight: 600; letter-spacing: 0.08em;
+    text-transform: uppercase; color: #6B7A70 !important;
+}
+.dv-kpi strong {
+    font-size: 1.35rem; font-weight: 700; color: #14532D !important;
+    line-height: 1.2;
+}
+.dv-kpi.laranja strong { color: #B84E08 !important; }
+.dv-kpi-nota { font-size: 0.66rem !important; color: #8A968E !important; }
+
 /* barra lateral de páginas (tela de indicadores) */
 [data-testid="stSidebar"] {
     background: #FFFFFF !important; border-right: 1px solid #DCE5DD;
@@ -2411,6 +2438,368 @@ def barra_paginas() -> str:
     return st.session_state["ind_pagina"]
 
 
+# ------------------------------------------------
+# Gráficos (Plotly)
+# ------------------------------------------------
+# O import é tolerante: se plotly não estiver no requirements.txt do repo, o
+# app continua de pé e a aba de análise avisa o que falta, em vez de morrer
+# no import e derrubar até a tela de login.
+try:
+    import plotly.express as px
+
+    TEM_PLOTLY = True
+except ImportError:  # pragma: no cover
+    px = None
+    TEM_PLOTLY = False
+
+# verde e laranja Della Volpe na frente; o resto são variações para séries
+CORES_DV = [
+    "#1F7A3D", "#E4610A", "#3F9D5A", "#F0902B",
+    "#14532D", "#B84E08", "#7FBF91", "#F6B87A",
+]
+
+
+def estiliza(fig, altura: int = 330):
+    """Paleta, fonte e — importante — número em português.
+
+    separators=",." faz o Plotly escrever 1.234,56 em eixos, rótulos e
+    hover. Sem isso todo valor sai no padrão americano.
+    """
+    fig.update_layout(
+        colorway=CORES_DV,
+        separators=",.",
+        height=altura,
+        margin=dict(l=10, r=10, t=40, b=10),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Poppins, Segoe UI, sans-serif", size=12, color="#3C4B42"),
+        hoverlabel=dict(bgcolor="#14532D", font_size=12, font_color="#FFFFFF"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.0, x=0, title=None),
+        xaxis=dict(showgrid=False, title=None),
+        yaxis=dict(gridcolor="#E3EAE4", zerolinecolor="#DCE5DD", title=None),
+    )
+    return fig
+
+
+def aviso_sem_plotly() -> None:
+    st.warning(
+        "Gráficos indisponíveis: falta o pacote **plotly** no "
+        "requirements.txt. Os relatórios e a extração continuam funcionando."
+    )
+
+
+# ------------------------------------------------
+# Cartões de indicador (HTML, para poder pintar)
+# ------------------------------------------------
+# st.metric não permite cor por cartão — todos ficariam iguais. Em HTML dá
+# controle de fundo, faixa lateral e seta, que é o que diferencia "receita"
+# de "pendente" num relance.
+CARTOES_PAGINA = {
+    "consumos": [],
+    "licencas": [],
+    "custos": [("Valor total", "VALOR", "brl", "verde", None)],
+    "reciclaveis": [
+        ("Receita total", "TOTAL", "brl", "verde", None),
+        # pedido: soma de TOTAL apenas onde o pagamento não entrou
+        ("Pagamento pendente", "TOTAL", "brl", "laranja",
+         ("PAGAMENTO", "Aguardando Pagamento")),
+        ("Peso total", "PESO", "kg", "neutro", None),
+    ],
+}
+
+
+def formata_valor(valor: float, formato: str) -> str:
+    if formato == "brl":
+        return fmt_brl(valor)
+    if formato == "kg":
+        return f"{fmt_num(valor)} kg"
+    return fmt_num(valor)
+
+
+def cartao_kpi(rotulo: str, valor: str, cor: str = "neutro", nota: str = "") -> str:
+    return (
+        f'<div class="dv-kpi {cor}">'
+        f'<span class="dv-kpi-rotulo">{rotulo}</span>'
+        f"<strong>{valor}</strong>"
+        f'<span class="dv-kpi-nota">{nota}</span>'
+        "</div>"
+    )
+
+
+def linha_cartoes(cartoes: list) -> None:
+    """cartoes = [(rotulo, valor_formatado, cor, nota), ...]"""
+    if not cartoes:
+        return
+    caixas = st.columns(len(cartoes))
+    for caixa, (rotulo, valor, cor, nota) in zip(caixas, cartoes):
+        with caixa:
+            st.markdown(cartao_kpi(rotulo, valor, cor, nota), unsafe_allow_html=True)
+
+
+def cartoes_da_pagina(pagina: str, df: pd.DataFrame) -> None:
+    cartoes = [("Registros", f"{len(df)}", "neutro", "no filtro atual")]
+    for rotulo, coluna, formato, cor, condicao in CARTOES_PAGINA.get(pagina, []):
+        if coluna not in df.columns:
+            continue
+        recorte = df
+        nota = ""
+        if condicao is not None:
+            col_cond, valor_cond = condicao
+            if col_cond not in df.columns:
+                continue
+            recorte = df[df[col_cond].map(texto_celula) == valor_cond]
+            nota = f"{len(recorte)} de {len(df)} lançamentos"
+        soma = pd.to_numeric(recorte[coluna], errors="coerce").fillna(0).sum()
+        cartoes.append((rotulo, formata_valor(soma, formato), cor, nota))
+    linha_cartoes(cartoes)
+
+
+# ------------------------------------------------
+# Competência: a coluna que permite série temporal
+# ------------------------------------------------
+def com_competencia(pagina: str, df: pd.DataFrame) -> pd.DataFrame:
+    """Acrescenta ANO_N, MES_N e COMPETENCIA (1º dia do mês).
+
+    Consumos não tem coluna de data — tem ANO e MES separados. Custos guarda
+    o mês como TEXTO ("Setembro"), que ordenado dá ordem alfabética. Aqui as
+    três tabelas passam a ter a mesma referência temporal.
+    """
+    saida = df.copy()
+
+    if pagina == "consumos":
+        saida["ANO_N"] = saida["ANO"].map(lambda v: para_int(v, 0))
+        saida["MES_N"] = saida["MES"].map(lambda v: para_int(v, 0))
+    elif pagina == "reciclaveis":
+        datas = saida["DATA"].map(para_data)
+        saida["ANO_N"] = datas.map(lambda d: d.year if d else 0)
+        saida["MES_N"] = datas.map(lambda d: d.month if d else 0)
+    elif pagina == "custos":
+        nomes = saida["MES"].map(nome_mes)
+        saida["MES_N"] = nomes.map(lambda n: MESES.index(n) + 1 if n in MESES else 0)
+        # SUSTENTABILIDADE_CUSTO não tem coluna ANO: o ano sai de
+        # DATA_PAGAMENTO e, quando ela está vazia, de DATA_CRIACAO — que é a
+        # data do lançamento, não a da competência. É aproximação; sem a
+        # coluna ANO não há como acertar dezembro lançado em janeiro.
+        pagamento = saida[COL_DATA_PAGAMENTO].map(para_data)
+        criacao = (
+            saida["DATA_CRIACAO"].map(para_data)
+            if "DATA_CRIACAO" in saida.columns
+            else pagamento
+        )
+        saida["ANO_N"] = [
+            (p or c).year if (p or c) else 0 for p, c in zip(pagamento, criacao)
+        ]
+    else:
+        saida["ANO_N"] = 0
+        saida["MES_N"] = 0
+
+    saida = saida[(saida["ANO_N"] > 0) & (saida["MES_N"].between(1, 12))]
+    saida["COMPETENCIA"] = [
+        date(int(a), int(m), 1) for a, m in zip(saida["ANO_N"], saida["MES_N"])
+    ]
+    saida["MES_NOME"] = saida["MES_N"].map(lambda m: MESES[int(m) - 1])
+    return saida
+
+
+# ------------------------------------------------
+# Análise: Recicláveis
+# ------------------------------------------------
+def analise_reciclaveis(df: pd.DataFrame) -> None:
+    if not TEM_PLOTLY:
+        aviso_sem_plotly()
+        return
+
+    base = com_competencia("reciclaveis", df)
+    if base.empty:
+        st.info("Sem registros com data válida para montar os gráficos.")
+        return
+
+    base["TOTAL_N"] = pd.to_numeric(base["TOTAL"], errors="coerce").fillna(0)
+
+    esq, dir_ = st.columns([1, 1])
+
+    with esq:
+        st.markdown("**Receita por ano**")
+        anual = base.groupby("ANO_N", as_index=False)["TOTAL_N"].sum()
+        fig = px.bar(anual, x="ANO_N", y="TOTAL_N", text="TOTAL_N")
+        fig.update_traces(
+            texttemplate="R$ %{text:,.0f}",
+            textposition="outside",
+            hovertemplate="%{x}<br>R$ %{y:,.2f}<extra></extra>",
+            marker_color=CORES_DV[0],
+        )
+        fig.update_xaxes(type="category")
+        st.plotly_chart(estiliza(fig), use_container_width=True)
+
+    with dir_:
+        st.markdown("**Receita por material** — do maior para o menor")
+        por_material = (
+            base.groupby("MATERIAL", as_index=False)["TOTAL_N"]
+            .sum()
+            .sort_values("TOTAL_N", ascending=True)  # asc: o maior fica no topo
+        )
+        fig = px.bar(por_material, x="TOTAL_N", y="MATERIAL", orientation="h",
+                     text="TOTAL_N")
+        fig.update_traces(
+            texttemplate="R$ %{text:,.0f}",
+            textposition="outside",
+            hovertemplate="%{y}<br>R$ %{x:,.2f}<extra></extra>",
+            marker_color=CORES_DV[0],
+        )
+        altura = max(330, 26 * len(por_material) + 90)
+        st.plotly_chart(estiliza(fig, altura), use_container_width=True)
+
+    st.markdown("**Receita por mês**")
+    mensal = base.groupby("COMPETENCIA", as_index=False)["TOTAL_N"].sum()
+    mensal["rotulo"] = [
+        f"{MESES[d.month - 1][:3]}/{d.year}" for d in mensal["COMPETENCIA"]
+    ]
+    fig = px.bar(mensal, x="rotulo", y="TOTAL_N")
+    fig.update_traces(
+        hovertemplate="%{x}<br>R$ %{y:,.2f}<extra></extra>",
+        marker_color=CORES_DV[1],
+    )
+    fig.update_xaxes(type="category", tickangle=-60)
+    st.plotly_chart(estiliza(fig, 360), use_container_width=True)
+    st.caption(
+        f"{len(mensal)} mês(es) com lançamento, de "
+        f"{mensal['rotulo'].iloc[0]} a {mensal['rotulo'].iloc[-1]}."
+    )
+
+
+# ------------------------------------------------
+# Análise: Consumos e Serviços
+# ------------------------------------------------
+COLUNAS_RESIDUO = [
+    (COL_SOLIDOS, "Sólidos contaminados"),
+    (COL_OLEO, "Óleo lubrificante"),
+    ("AGUA", "Água"),
+    ("ENERGIA", "Energia"),
+    ("COMUM", "Comum"),
+    ("MADEIRA", "Madeira"),
+    ("RECICLAVEIS", "Recicláveis"),
+    ("CO2", "CO²"),
+]
+
+
+def analise_consumos(df: pd.DataFrame) -> None:
+    base = com_competencia("consumos", df)
+    if base.empty:
+        st.info("Sem registros com ANO e MÊS válidos para montar a análise.")
+        return
+
+    colunas = [(c, r) for c, r in COLUNAS_RESIDUO if c in base.columns]
+    for coluna, _ in colunas:
+        base[coluna] = pd.to_numeric(base[coluna], errors="coerce").fillna(0)
+
+    # ---------- matriz ano x resíduo ----------
+    st.markdown("**Volume por ano e resíduo**")
+    matriz = base.groupby("ANO_N")[[c for c, _ in colunas]].sum()
+    matriz.index.name = "ANO"
+    exibir = matriz.rename(columns=dict(colunas)).sort_index(ascending=False)
+    # formatação pt-BR: como é matriz de leitura, texto resolve
+    st.dataframe(exibir.map(fmt_num), use_container_width=True)
+    st.caption(
+        "⚠️ São **volumes**, em unidades diferentes (kg, m³, kWh) — por isso "
+        "não há total de linha nem de coluna: somar as colunas não teria "
+        "significado. O gasto em R$ está na tela de Custos."
+    )
+
+    if not TEM_PLOTLY:
+        aviso_sem_plotly()
+        return
+
+    # ---------- comparativo mensal ----------
+    st.divider()
+    st.markdown("**Comparativo mensal**")
+    esq, dir_ = st.columns([1, 2])
+    with esq:
+        rotulos = {r: c for c, r in colunas}
+        escolhido = st.selectbox(
+            "Resíduo",
+            list(rotulos),
+            key="ind_consumo_residuo",
+            help="A matriz acima mistura unidades; o gráfico compara um por vez",
+        )
+    coluna = rotulos[escolhido]
+
+    serie = base.groupby(["ANO_N", "MES_N"], as_index=False)[coluna].sum()
+    serie["MES_NOME"] = serie["MES_N"].map(lambda m: MESES[int(m) - 1])
+    serie["ANO"] = serie["ANO_N"].astype(str)
+
+    # ---------- cartões de variação ----------
+    # o mês mais recente com lançamento é a referência
+    ultimo = serie.sort_values(["ANO_N", "MES_N"]).iloc[-1]
+    ano_ref, mes_ref = int(ultimo["ANO_N"]), int(ultimo["MES_N"])
+    atual = float(ultimo[coluna])
+
+    def valor_em(ano: int, mes: int):
+        linha = serie[(serie["ANO_N"] == ano) & (serie["MES_N"] == mes)]
+        return float(linha[coluna].iloc[0]) if not linha.empty else None
+
+    ano_ant, mes_ant = (ano_ref, mes_ref - 1) if mes_ref > 1 else (ano_ref - 1, 12)
+    anterior = valor_em(ano_ant, mes_ant)
+    ano_passado = valor_em(ano_ref - 1, mes_ref)
+
+    def variacao(base_valor):
+        """Queda é resultado BOM em consumo: a seta é invertida."""
+        if base_valor in (None, 0):
+            return "sem base", "neutro"
+        delta = (atual - base_valor) / base_valor
+        seta = "▲" if delta > 0 else "▼"
+        cor = "laranja" if delta > 0 else "verde"
+        return f"{seta} {abs(delta):.1%}".replace(".", ","), cor
+
+    var_mes, cor_mes = variacao(anterior)
+    var_ano, cor_ano = variacao(ano_passado)
+
+    with dir_:
+        linha_cartoes([
+            (
+                f"{MESES[mes_ref - 1]}/{ano_ref}",
+                fmt_num(atual),
+                "neutro",
+                escolhido,
+            ),
+            (
+                "vs. mês anterior",
+                var_mes,
+                cor_mes,
+                f"{MESES[mes_ant - 1]}/{ano_ant}: "
+                + (fmt_num(anterior) if anterior is not None else "—"),
+            ),
+            (
+                "vs. mesmo mês do ano passado",
+                var_ano,
+                cor_ano,
+                f"{MESES[mes_ref - 1]}/{ano_ref - 1}: "
+                + (fmt_num(ano_passado) if ano_passado is not None else "—"),
+            ),
+        ])
+
+    # ---------- uma linha por ano ----------
+    # este é o gráfico que responde às duas comparações de uma vez: a
+    # inclinação da linha é o mês contra o anterior, e a distância entre as
+    # linhas é o mesmo mês contra o ano passado
+    fig = px.line(
+        serie.sort_values(["ANO_N", "MES_N"]),
+        x="MES_NOME", y=coluna, color="ANO", markers=True,
+        category_orders={"MES_NOME": MESES},
+    )
+    fig.update_traces(hovertemplate="%{x}<br>%{y:,.2f}<extra>%{fullData.name}</extra>")
+    st.plotly_chart(estiliza(fig, 380), use_container_width=True)
+    st.caption(
+        f"{escolhido}: cada linha é um ano. A inclinação mostra o mês contra "
+        "o anterior; a distância entre linhas, o mesmo mês contra o ano passado."
+    )
+
+
+ANALISES = {
+    "reciclaveis": analise_reciclaveis,
+    "consumos": analise_consumos,
+}
+
+
 def pagina_relatorio(pagina: str) -> None:
     nome = PAGINAS_INDICADOR[pagina]
     st.markdown(f"### {nome}")
@@ -2436,20 +2825,23 @@ def pagina_relatorio(pagina: str) -> None:
     # (e o descarte do id) vem só agora
     filtrado = colunas_relatorio(pagina, filtrado)
 
-    # ---- somas ----
-    resumos = [
-        (col, rotulo, formato)
-        for col, rotulo, formato in RESUMOS_RELATORIO.get(pagina, [])
-        if col in filtrado.columns
-    ]
-    caixas = st.columns(len(resumos) + 1)
-    with caixas[0]:
-        st.metric("Registros", f"{len(filtrado)}")
-    for i, (col, rotulo, formato) in enumerate(resumos, start=1):
-        soma = pd.to_numeric(filtrado[col], errors="coerce").fillna(0).sum()
-        with caixas[i]:
-            st.metric(rotulo, fmt_brl(soma) if formato == "brl" else fmt_num(soma))
+    cartoes_da_pagina(pagina, filtrado)
 
+    analise = ANALISES.get(pagina)
+    if analise is None:
+        bloco_relatorio(pagina, filtrado, df)
+        return
+
+    aba_analise, aba_relatorio = st.tabs(["📊 Análise", "📄 Relatório"])
+    with aba_analise:
+        analise(filtrado)
+    with aba_relatorio:
+        bloco_relatorio(pagina, filtrado, df)
+
+
+def bloco_relatorio(pagina: str, filtrado: pd.DataFrame, df: pd.DataFrame) -> None:
+    """Tabela + extração. Recebe já filtrado para o arquivo sair igual à tela."""
+    nome = PAGINAS_INDICADOR[pagina]   # vira o nome da aba no xlsx
     st.dataframe(filtrado, hide_index=True, height=380)
     if len(filtrado) == len(df):
         st.caption(f"{len(df)} registro(s).")
