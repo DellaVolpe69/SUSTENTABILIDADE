@@ -483,6 +483,23 @@ def entrada_filial(chave: str, label: str = "FILIAL") -> None:
 
 
 # ------------------------------------------------
+# Telas restritas
+# ------------------------------------------------
+# A tela de Indicadores é só para os e-mails da lista ADMINS. Quem entra
+# pelo cadastro de SUSTENTABILIDADE_USUARIOS não tem acesso — nem pelo
+# cartão do menu, nem chegando direto na tela.
+#
+# São DUAS camadas de propósito: esconder o cartão é conveniência, não
+# proteção. A verificação dentro da tela é o que de fato barra, e é ela que
+# garante que nenhuma consulta ao banco acontece antes da checagem.
+TELAS_RESTRITAS = {"indicador"}
+
+
+def pode_ver(tela: str) -> bool:
+    return PERFIL["admin"] or tela not in TELAS_RESTRITAS
+
+
+# ------------------------------------------------
 # Porteiro: aqui o acesso é decidido
 # ------------------------------------------------
 PERFIL = perfil_acesso(usuario_email_logado)
@@ -1048,7 +1065,9 @@ def tela_menu() -> None:
     # a terceira coluna é só respiro: mantém os cards na área clara, sem
     # avançar sobre o caminhão
     col_a, col_b, _respiro = st.columns([1, 1, 1.5], gap="small")
-    for i, (tela, titulo, icone, cor, descricao) in enumerate(CARDS_MENU):
+    # o cartão de tela restrita simplesmente não é oferecido
+    visiveis = [c for c in CARDS_MENU if pode_ver(c[0])]
+    for i, (tela, titulo, icone, cor, descricao) in enumerate(visiveis):
         with col_a if i % 2 == 0 else col_b:
             st.markdown(html_card_topo(titulo, icone, cor, descricao), unsafe_allow_html=True)
             st.button(
@@ -3368,6 +3387,18 @@ def bloco_relatorio(pagina: str, filtrado: pd.DataFrame, df: pd.DataFrame) -> No
 
 def tela_indicador() -> None:
     cabecalho_tela("indicador")
+
+    # a checagem vem ANTES de barra_paginas() e de pagina_relatorio(): assim
+    # nenhuma linha é lida do banco para quem não pode ver a tela
+    if not pode_ver("indicador"):
+        st.error("Acesso restrito — esta tela é exclusiva da equipe do painel.")
+        st.caption(
+            f"Seu acesso é de lançamento nas filiais: "
+            + (", ".join(PERFIL["filiais"]) or "nenhuma")
+            + ". Use o botão Voltar para retornar ao menu."
+        )
+        return
+
     pagina = barra_paginas()
     pagina_relatorio(pagina)
 
@@ -3387,4 +3418,11 @@ ROTAS = {
 # A navegação é por st.button (ir_para), nunca por link: um <a href> faz o
 # navegador recarregar a página, o Streamlit abre uma sessão nova, o token
 # do Azure em st.session_state se perde e o login é pedido outra vez.
-ROTAS.get(st.session_state["tela"], tela_menu)()
+# terceira camada: se o estado da sessão apontar para uma tela restrita
+# (sessão antiga, mudança de perfil), o roteador devolve o menu
+_tela_atual = st.session_state["tela"]
+if not pode_ver(_tela_atual):
+    _tela_atual = "menu"
+    st.session_state["tela"] = "menu"
+
+ROTAS.get(_tela_atual, tela_menu)()
