@@ -1347,19 +1347,20 @@ def form_consumos() -> None:
     with c3:
         st.selectbox("MÊS", MESES, index=date.today().month - 1, key="con_mes")
 
-    st.markdown("**Volumes / consumos**")
+    st.markdown("**Valores pagos por serviço (R$)**")
+    st.caption("Todos os campos abaixo são valor em reais, não quantidade.")
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.number_input("SÓLIDOS CONTAMINADOS", min_value=0.0, step=0.01, format="%.2f", key="con_solidos")
-        st.number_input("ENERGIA", min_value=0.0, step=0.01, format="%.2f", key="con_energia")
-        st.number_input("RECICLÁVEIS", min_value=0.0, step=0.01, format="%.2f", key="con_reciclaveis")
+        st.number_input("SÓLIDOS CONTAMINADOS (R$)", min_value=0.0, step=0.01, format="%.2f", key="con_solidos")
+        st.number_input("ENERGIA (R$)", min_value=0.0, step=0.01, format="%.2f", key="con_energia")
+        st.number_input("RECICLÁVEIS (R$)", min_value=0.0, step=0.01, format="%.2f", key="con_reciclaveis")
     with c2:
-        st.number_input("ÓLEO LUBRIFICANTE", min_value=0.0, step=0.01, format="%.2f", key="con_oleo")
-        st.number_input("COMUM", min_value=0.0, step=0.01, format="%.2f", key="con_comum")
-        st.number_input("CO²", min_value=0.0, step=0.01, format="%.2f", key="con_co2")
+        st.number_input("ÓLEO LUBRIFICANTE (R$)", min_value=0.0, step=0.01, format="%.2f", key="con_oleo")
+        st.number_input("COMUM (R$)", min_value=0.0, step=0.01, format="%.2f", key="con_comum")
+        st.number_input("CO² (R$)", min_value=0.0, step=0.01, format="%.2f", key="con_co2")
     with c3:
-        st.number_input("ÁGUA", min_value=0.0, step=0.01, format="%.2f", key="con_agua")
-        st.number_input("MADEIRA", min_value=0.0, step=0.01, format="%.2f", key="con_madeira")
+        st.number_input("ÁGUA (R$)", min_value=0.0, step=0.01, format="%.2f", key="con_agua")
+        st.number_input("MADEIRA (R$)", min_value=0.0, step=0.01, format="%.2f", key="con_madeira")
 
     st.button("💾 Salvar", key="btn_salvar_con", on_click=salvar_consumo, type="primary")
     render_msg("msg_consumos")
@@ -1668,14 +1669,14 @@ CAMPOS_EDICAO = {
         campo("FILIAL", "filial"),
         campo("ANO", "inteiro", minimo=1990, maximo=2100),
         campo("MES", "mes", "MÊS"),
-        campo(COL_SOLIDOS, "decimal", "SÓLIDOS CONTAMINADOS"),
-        campo(COL_OLEO, "decimal", "ÓLEO LUBRIFICANTE"),
-        campo("AGUA", "decimal", "ÁGUA"),
-        campo("ENERGIA", "decimal"),
-        campo("COMUM", "decimal"),
-        campo("MADEIRA", "decimal"),
-        campo("RECICLAVEIS", "decimal", "RECICLÁVEIS"),
-        campo("CO2", "decimal", "CO²"),
+        campo(COL_SOLIDOS, "decimal", "SÓLIDOS CONTAMINADOS (R$)"),
+        campo(COL_OLEO, "decimal", "ÓLEO LUBRIFICANTE (R$)"),
+        campo("AGUA", "decimal", "ÁGUA (R$)"),
+        campo("ENERGIA", "decimal", "ENERGIA (R$)"),
+        campo("COMUM", "decimal", "COMUM (R$)"),
+        campo("MADEIRA", "decimal", "MADEIRA (R$)"),
+        campo("RECICLAVEIS", "decimal", "RECICLÁVEIS (R$)"),
+        campo("CO2", "decimal", "CO² (R$)"),
     ],
     "licencas": [
         campo("FILIAL", "filial"),
@@ -2494,6 +2495,21 @@ def aviso_sem_plotly() -> None:
     )
 
 
+# Serviços da tela de Consumos. Todas as colunas são VALOR PAGO em reais —
+# não são volumes. Por isso somar entre elas faz sentido e a matriz tem
+# coluna de total.
+SERVICOS_CONSUMO = [
+    (COL_SOLIDOS, "Sólidos contaminados"),
+    (COL_OLEO, "Óleo lubrificante"),
+    ("AGUA", "Água"),
+    ("ENERGIA", "Energia"),
+    ("COMUM", "Comum"),
+    ("MADEIRA", "Madeira"),
+    ("RECICLAVEIS", "Recicláveis"),
+    ("CO2", "CO²"),
+]
+
+
 # ------------------------------------------------
 # Cartões de indicador (HTML, para poder pintar)
 # ------------------------------------------------
@@ -2502,13 +2518,17 @@ def aviso_sem_plotly() -> None:
 # de "pendente" num relance.
 # rótulo do primeiro cartão (a contagem de linhas) por página
 ROTULO_CONTAGEM = {
+    "consumos": "Lançamentos",
     "licencas": "Total de licenças",
     "reciclaveis": "Lançamentos",
     "custos": "Lançamentos",
 }
 
 CARTOES_PAGINA = {
-    "consumos": [],
+    # a coluna pode ser uma lista: soma horizontal dos serviços
+    "consumos": [
+        ("Valor total", [c for c, _ in SERVICOS_CONSUMO], "brl", "verde", None),
+    ],
     # formato "cont" conta linhas em vez de somar uma coluna
     "licencas": [
         ("Vencidas", None, "cont", "vermelho", ("STATUS", "VENCIDO")),
@@ -2560,7 +2580,10 @@ def cartoes_da_pagina(pagina: str, df: pd.DataFrame) -> None:
          "todos os status" if pagina == "licencas" else "no filtro atual")
     ]
     for rotulo, coluna, formato, cor, condicao in CARTOES_PAGINA.get(pagina, []):
-        if formato != "cont" and coluna not in df.columns:
+        # coluna pode ser uma lista (soma de vários campos)
+        colunas = coluna if isinstance(coluna, (list, tuple)) else [coluna]
+        colunas = [c for c in colunas if c in df.columns]
+        if formato != "cont" and not colunas:
             continue
 
         recorte = df
@@ -2581,7 +2604,11 @@ def cartoes_da_pagina(pagina: str, df: pd.DataFrame) -> None:
 
         if condicao is not None:
             nota = f"{len(recorte)} de {len(df)} lançamentos"
-        soma = pd.to_numeric(recorte[coluna], errors="coerce").fillna(0).sum()
+        soma = sum(
+            pd.to_numeric(recorte[c], errors="coerce").fillna(0).sum() for c in colunas
+        )
+        if len(colunas) > 1 and not nota:
+            nota = f"{len(colunas)} serviços somados"
         cartoes.append((rotulo, formata_valor(soma, formato), cor, nota))
     linha_cartoes(cartoes)
 
@@ -2637,54 +2664,75 @@ def sinal_valor(diferenca: float) -> str:
     return ("+" if diferenca >= 0 else "−") + fmt_brl(abs(diferenca))
 
 
-def comparativo_anual(base: pd.DataFrame, coluna: str, subir_e_bom: bool = True):
-    """Ano corrente contra o anterior, restrito aos MESMOS meses.
+def resumo_anual(base: pd.DataFrame, coluna: str):
+    """Totais do ano corrente e do ano anterior nos MESMOS meses fechados.
 
-    Comparar 2026 fechado até agosto com 2025 inteiro mostraria uma queda
-    que não existe — são 8 meses contra 12. Aqui o ano anterior é recortado
-    nos meses que o ano corrente já tem.
+    Comparar 2026 até agosto com 2025 inteiro mostraria uma queda que não
+    existe — são 8 meses contra 12. E o mês corrente, ainda aberto, também
+    fica fora: 5 dias de setembro contra setembro inteiro do ano passado
+    inventaria economia.
 
-    Devolve (cartão, nota_do_periodo) ou (None, None) se não houver base.
+    Uma função só para que cartão, comparativo e gráfico não divirjam.
     """
     if base.empty:
-        return None, None
+        return None
 
     valores = pd.to_numeric(base[coluna], errors="coerce").fillna(0)
     trabalho = base.assign(_v=valores)
 
     ano_atual = int(trabalho["ANO_N"].max())
-    meses_atual = sorted({int(m) for m in trabalho[trabalho["ANO_N"] == ano_atual]["MES_N"]})
-    if not meses_atual:
-        return None, None
+    meses = sorted({int(m) for m in trabalho[trabalho["ANO_N"] == ano_atual]["MES_N"]})
+    if not meses:
+        return None
 
-    # O mês corrente ainda está aberto: comparar 5 dias de setembro contra o
-    # setembro inteiro do ano passado inventa uma queda. Só entram meses
-    # fechados — a não ser que o ano só tenha o mês corrente.
     hoje = date.today()
     aberto = False
     if ano_atual == hoje.year:
-        fechados = [m for m in meses_atual if m < hoje.month]
+        fechados = [m for m in meses if m < hoje.month]
         if fechados:
-            meses_atual = fechados
+            meses = fechados
         else:
             aberto = True
 
-    do_ano = trabalho[
-        (trabalho["ANO_N"] == ano_atual) & (trabalho["MES_N"].isin(meses_atual))
-    ]
-    total_atual = do_ano["_v"].sum()
+    do_ano = trabalho[(trabalho["ANO_N"] == ano_atual) & (trabalho["MES_N"].isin(meses))]
     anterior = trabalho[
-        (trabalho["ANO_N"] == ano_atual - 1) & (trabalho["MES_N"].isin(meses_atual))
+        (trabalho["ANO_N"] == ano_atual - 1) & (trabalho["MES_N"].isin(meses))
     ]
     total_anterior = anterior["_v"].sum()
 
     faixa = (
-        f"{MESES[meses_atual[0] - 1][:3]}–{MESES[meses_atual[-1] - 1][:3]}"
-        if len(meses_atual) > 1
-        else MESES[meses_atual[0] - 1][:3]
+        f"{MESES[meses[0] - 1][:3]}–{MESES[meses[-1] - 1][:3]}"
+        if len(meses) > 1
+        else MESES[meses[0] - 1][:3]
     )
 
-    if anterior.empty or total_anterior == 0:
+    return {
+        "ano": ano_atual,
+        "meses": meses,
+        "faixa": faixa,
+        "aberto": aberto,
+        "total": float(do_ano["_v"].sum()),
+        "total_anterior": float(total_anterior),
+        "tem_base": (not anterior.empty) and total_anterior != 0,
+    }
+
+
+def comparativo_anual(base: pd.DataFrame, coluna: str, subir_e_bom: bool = True):
+    """Cartão de variação ano a ano. Devolve (cartão, faixa) ou (None, None).
+
+    subir_e_bom=False inverte a cor: gasto subindo é resultado ruim.
+    """
+    resumo = resumo_anual(base, coluna)
+    if resumo is None:
+        return None, None
+
+    ano_atual = resumo["ano"]
+    faixa = resumo["faixa"]
+    aberto = resumo["aberto"]
+    total_atual = resumo["total"]
+    total_anterior = resumo["total_anterior"]
+
+    if not resumo["tem_base"]:
         return (
             (
                 f"{ano_atual} vs {ano_atual - 1}",
@@ -2800,129 +2848,137 @@ def analise_reciclaveis(df: pd.DataFrame) -> None:
 # ------------------------------------------------
 # Análise: Consumos e Serviços
 # ------------------------------------------------
-COLUNAS_RESIDUO = [
-    (COL_SOLIDOS, "Sólidos contaminados"),
-    (COL_OLEO, "Óleo lubrificante"),
-    ("AGUA", "Água"),
-    ("ENERGIA", "Energia"),
-    ("COMUM", "Comum"),
-    ("MADEIRA", "Madeira"),
-    ("RECICLAVEIS", "Recicláveis"),
-    ("CO2", "CO²"),
-]
-
-
 def analise_consumos(df: pd.DataFrame) -> None:
     base = com_competencia("consumos", df)
     if base.empty:
         st.info("Sem registros com ANO e MÊS válidos para montar a análise.")
         return
 
-    colunas = [(c, r) for c, r in COLUNAS_RESIDUO if c in base.columns]
+    colunas = [(c, r) for c, r in SERVICOS_CONSUMO if c in base.columns]
     for coluna, _ in colunas:
         base[coluna] = pd.to_numeric(base[coluna], errors="coerce").fillna(0)
 
-    # ---------- matriz ano x resíduo ----------
-    st.markdown("**Volume por ano e resíduo**")
+    # ---------- filtro de serviço ----------
+    rotulos = {r: c for c, r in colunas}
+    escolhidos = st.multiselect(
+        "Serviços",
+        list(rotulos),
+        key="ind_consumo_servicos",
+        help="Vazio = todos os serviços somados",
+    )
+    selecionados = [rotulos[r] for r in escolhidos] or [c for c, _ in colunas]
+    base["VALOR"] = base[selecionados].sum(axis=1)
+    titulo_selecao = ", ".join(escolhidos) if escolhidos else "todos os serviços"
+
+    # ---------- cartões de gasto ----------
+    resumo = resumo_anual(base, "VALOR")
+    cartoes = []
+    if resumo is not None:
+        cartoes.append(
+            (
+                f"Gasto {resumo['faixa']}/{resumo['ano']}",
+                fmt_brl(resumo["total"]),
+                "neutro",
+                titulo_selecao,
+            )
+        )
+        if resumo["tem_base"]:
+            cartoes.append(
+                (
+                    f"Mesmo período {resumo['ano'] - 1}",
+                    fmt_brl(resumo["total_anterior"]),
+                    "neutro",
+                    f"{resumo['faixa']}/{resumo['ano'] - 1}",
+                )
+            )
+        # gasto subindo é resultado ruim: a seta inverte
+        cartao_ano, _ = comparativo_anual(base, "VALOR", subir_e_bom=False)
+        if cartao_ano is not None:
+            cartoes.append(cartao_ano)
+
+    # ---------- último mês fechado vs. o anterior ----------
+    serie = base.groupby(["ANO_N", "MES_N"], as_index=False)["VALOR"].sum()
+
+    def valor_em(ano: int, mes: int):
+        linha = serie[(serie["ANO_N"] == ano) & (serie["MES_N"] == mes)]
+        return float(linha["VALOR"].iloc[0]) if not linha.empty else None
+
+    if resumo is not None and resumo["meses"]:
+        ano_ref, mes_ref = resumo["ano"], resumo["meses"][-1]
+        atual = valor_em(ano_ref, mes_ref) or 0.0
+        ano_ant, mes_ant = (ano_ref, mes_ref - 1) if mes_ref > 1 else (ano_ref - 1, 12)
+        anterior = valor_em(ano_ant, mes_ant)
+
+        if anterior:
+            delta = (atual - anterior) / anterior
+            subiu = delta >= 0
+            cartoes.append(
+                (
+                    f"{MESES[mes_ref - 1]}/{ano_ref} vs. mês anterior",
+                    f"{'▲' if subiu else '▼'} {abs(delta):.1%}".replace(".", ","),
+                    "laranja" if subiu else "verde",
+                    f"{fmt_brl(atual)} · {MESES[mes_ant - 1]}/{ano_ant}: {fmt_brl(anterior)}",
+                )
+            )
+        else:
+            cartoes.append(
+                (
+                    f"{MESES[mes_ref - 1]}/{ano_ref}",
+                    fmt_brl(atual),
+                    "neutro",
+                    "sem mês anterior para comparar",
+                )
+            )
+
+    linha_cartoes(cartoes)
+    if resumo is not None and resumo["tem_base"]:
+        st.caption(
+            "A comparação anual usa os mesmos meses nos dois anos "
+            f"({resumo['faixa']}), e só meses fechados — o mês corrente fica "
+            "de fora para não parecer economia."
+        )
+
+    # ---------- matriz ano x serviço ----------
+    st.divider()
+    st.markdown("**Valor pago por ano e serviço (R$)**")
     matriz = base.groupby("ANO_N")[[c for c, _ in colunas]].sum()
     matriz.index.name = "ANO"
+    matriz["TOTAL"] = matriz.sum(axis=1)
     exibir = matriz.rename(columns=dict(colunas)).sort_index(ascending=False)
-    # formatação pt-BR: como é matriz de leitura, texto resolve
-    st.dataframe(exibir.map(fmt_num), use_container_width=True)
+    st.dataframe(exibir.map(fmt_brl), use_container_width=True)
     st.caption(
-        "⚠️ São **volumes**, em unidades diferentes (kg, m³, kWh) — por isso "
-        "não há total de linha nem de coluna: somar as colunas não teria "
-        "significado. O gasto em R$ está na tela de Custos."
+        "Todos os campos são valores pagos, então a coluna TOTAL soma a "
+        "linha. A matriz ignora o filtro de serviço acima, de propósito: "
+        "ela é a visão completa do ano."
     )
 
     if not TEM_PLOTLY:
         aviso_sem_plotly()
         return
 
-    # ---------- comparativo mensal ----------
-    st.divider()
-    st.markdown("**Comparativo mensal**")
-    esq, dir_ = st.columns([1, 2])
-    with esq:
-        rotulos = {r: c for c, r in colunas}
-        escolhido = st.selectbox(
-            "Resíduo",
-            list(rotulos),
-            key="ind_consumo_residuo",
-            help="A matriz acima mistura unidades; o gráfico compara um por vez",
-        )
-    coluna = rotulos[escolhido]
-
-    serie = base.groupby(["ANO_N", "MES_N"], as_index=False)[coluna].sum()
-    serie["MES_NOME"] = serie["MES_N"].map(lambda m: MESES[int(m) - 1])
-    serie["ANO"] = serie["ANO_N"].astype(str)
-
-    # ---------- cartões de variação ----------
-    # o mês mais recente com lançamento é a referência
-    ultimo = serie.sort_values(["ANO_N", "MES_N"]).iloc[-1]
-    ano_ref, mes_ref = int(ultimo["ANO_N"]), int(ultimo["MES_N"])
-    atual = float(ultimo[coluna])
-
-    def valor_em(ano: int, mes: int):
-        linha = serie[(serie["ANO_N"] == ano) & (serie["MES_N"] == mes)]
-        return float(linha[coluna].iloc[0]) if not linha.empty else None
-
-    ano_ant, mes_ant = (ano_ref, mes_ref - 1) if mes_ref > 1 else (ano_ref - 1, 12)
-    anterior = valor_em(ano_ant, mes_ant)
-    ano_passado = valor_em(ano_ref - 1, mes_ref)
-
-    def variacao(base_valor):
-        """Queda é resultado BOM em consumo: a seta é invertida."""
-        if base_valor in (None, 0):
-            return "sem base", "neutro"
-        delta = (atual - base_valor) / base_valor
-        seta = "▲" if delta > 0 else "▼"
-        cor = "laranja" if delta > 0 else "verde"
-        return f"{seta} {abs(delta):.1%}".replace(".", ","), cor
-
-    var_mes, cor_mes = variacao(anterior)
-    var_ano, cor_ano = variacao(ano_passado)
-
-    with dir_:
-        linha_cartoes([
-            (
-                f"{MESES[mes_ref - 1]}/{ano_ref}",
-                fmt_num(atual),
-                "neutro",
-                escolhido,
-            ),
-            (
-                "vs. mês anterior",
-                var_mes,
-                cor_mes,
-                f"{MESES[mes_ant - 1]}/{ano_ant}: "
-                + (fmt_num(anterior) if anterior is not None else "—"),
-            ),
-            (
-                "vs. mesmo mês do ano passado",
-                var_ano,
-                cor_ano,
-                f"{MESES[mes_ref - 1]}/{ano_ref - 1}: "
-                + (fmt_num(ano_passado) if ano_passado is not None else "—"),
-            ),
-        ])
-
     # ---------- uma linha por ano ----------
     # este é o gráfico que responde às duas comparações de uma vez: a
     # inclinação da linha é o mês contra o anterior, e a distância entre as
     # linhas é o mesmo mês contra o ano passado
+    st.divider()
+    st.markdown(f"**Gasto mensal — {titulo_selecao}**")
+    grafico = serie.copy()
+    grafico["MES_NOME"] = grafico["MES_N"].map(lambda m: MESES[int(m) - 1])
+    grafico["ANO"] = grafico["ANO_N"].astype(str)
+
     fig = px.line(
-        serie.sort_values(["ANO_N", "MES_N"]),
-        x="MES_NOME", y=coluna, color="ANO", markers=True,
+        grafico.sort_values(["ANO_N", "MES_N"]),
+        x="MES_NOME", y="VALOR", color="ANO", markers=True,
         category_orders={"MES_NOME": MESES},
     )
-    fig.update_traces(hovertemplate="%{x}<br>%{y:,.2f}<extra>%{fullData.name}</extra>")
+    fig.update_traces(
+        hovertemplate="%{x}<br>R$ %{y:,.2f}<extra>%{fullData.name}</extra>"
+    )
     st.plotly_chart(estiliza(fig, 380), use_container_width=True)
     st.caption(
-        f"{escolhido}: cada linha é um ano. A inclinação mostra o mês contra "
-        "o anterior; a distância entre linhas, o mesmo mês contra o ano passado."
+        "Cada linha é um ano. A inclinação mostra o mês contra o anterior; "
+        "a distância entre as linhas, o mesmo mês contra o ano passado."
     )
-
 
 # ------------------------------------------------
 # Análise: Licenças
