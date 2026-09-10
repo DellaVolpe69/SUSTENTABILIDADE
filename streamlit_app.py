@@ -1566,15 +1566,62 @@ def form_custos() -> None:
 # ================================================
 # Sem st.form também porque o TOTAL (PESO x VALOR/KG) precisa acompanhar a
 # digitação — dentro de um form só haveria rerun no submit.
-CAMPOS_RECICLAVEIS = ("rec_filial", "rec_material", "rec_peso", "rec_valor_kg", "rec_pagamento")
+CAMPOS_RECICLAVEIS = (
+    "rec_filial",
+    "rec_material",
+    "rec_material_novo",
+    "rec_peso",
+    "rec_valor_kg",
+    "rec_pagamento",
+)
 OPCOES_PAGAMENTO = ["Pg Recebido", "Aguardando Pagamento"]
+
+# Lista CURADA, não lida do banco: ler os valores existentes manteria TUBO e
+# TUBOS como opções distintas e não padronizaria nada. Levantada dos 411
+# lançamentos importados + MADEIRA, que entrou depois pelo app.
+#
+# Decisões embutidas (ver conversa de 10/09/2026):
+#   * TUBOS foi unificado em TUBO (104 + 9 = 113 lançamentos)
+#   * "SOBRA DE 2023" ficou fora: é ajuste de fechamento, não material
+#   * "PAPEL" puro ficou fora: 1 lançamento, provavelmente um dos outros três
+# Registro antigo com nome fora desta lista continua aparecendo na aba de
+# edição — o campo do tipo "opcoes" inclui o valor gravado na lista.
+MATERIAL_OUTRO = "OUTRO — digitar"
+MATERIAIS_RECICLAVEIS = [
+    "COBRE",
+    "FERRO",
+    "IBC VAZIO",
+    "LATINHA",
+    "MADEIRA",
+    "METAL",
+    "PAPEL ARQUIVO",
+    "PAPEL BRANCO",
+    "PAPEL ESCRITORIO",
+    "PAPELÃO",
+    "PLASTICO BRANCO",
+    "PLASTICO COLORIDO",
+    "PLASTICO DURO",
+    "PLASTICO STRETCH",
+    "SWA",
+    "TAMBOR VAZIO",
+    "TANQUE DE OLEO VELHO",
+    "TUBO",
+]
+
+
+def material_reciclavel() -> str:
+    """O material escolhido, ou o digitado quando a opção é OUTRO."""
+    escolhido = txt("rec_material")
+    if escolhido == MATERIAL_OUTRO:
+        return txt("rec_material_novo").upper()
+    return escolhido.upper()
 
 
 def salvar_reciclaveis() -> None:
     faltando = []
     if not txt("rec_filial"):
         faltando.append("FILIAL")
-    if not txt("rec_material"):
+    if not material_reciclavel():
         faltando.append("MATERIAL")
     if faltando:
         st.session_state["msg_reciclaveis"] = ("warning", "Obrigatório: " + ", ".join(faltando))
@@ -1585,7 +1632,7 @@ def salvar_reciclaveis() -> None:
     dados = {
         "FILIAL": txt("rec_filial").upper(),
         "DATA": st.session_state.get("rec_data", date.today()),
-        "MATERIAL": txt("rec_material").upper(),
+        "MATERIAL": material_reciclavel(),
         "PESO": peso,
         "VALOR_KG": valor_kg,
         "TOTAL": round(peso * valor_kg, 2),
@@ -1602,7 +1649,18 @@ def form_reciclaveis() -> None:
         st.date_input("DATA", value=date.today(), format="DD/MM/YYYY", key="rec_data")
         peso = st.number_input("PESO", min_value=0.0, step=0.01, format="%.2f", key="rec_peso")
     with c2:
-        st.text_input("MATERIAL", key="rec_material")
+        escolha = st.selectbox(
+            "MATERIAL",
+            MATERIAIS_RECICLAVEIS + [MATERIAL_OUTRO],
+            key="rec_material",
+            help="Lista fechada para o nome não variar entre lançamentos",
+        )
+        if escolha == MATERIAL_OUTRO:
+            st.text_input(
+                "Qual material?",
+                key="rec_material_novo",
+                placeholder="nome do material novo",
+            )
         valor_kg = st.number_input(
             "VALOR/KG", min_value=0.0, step=0.01, format="%.2f", key="rec_valor_kg"
         )
@@ -1706,7 +1764,9 @@ CAMPOS_EDICAO = {
     "reciclaveis": [
         campo("FILIAL", "filial"),
         campo("DATA", "data"),
-        campo("MATERIAL", "texto"),
+        # "opcoes" mantém na lista o nome já gravado, mesmo fora da curadoria:
+        # editar um registro antigo não reescreve o material sem pedir
+        campo("MATERIAL", "opcoes", opcoes=MATERIAIS_RECICLAVEIS),
         campo("PESO", "decimal"),
         campo("VALOR_KG", "decimal", "VALOR/KG"),
         campo("TOTAL", "calculado"),
