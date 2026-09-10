@@ -2633,21 +2633,14 @@ def com_competencia(pagina: str, df: pd.DataFrame) -> pd.DataFrame:
         saida["ANO_N"] = datas.map(lambda d: d.year if d else 0)
         saida["MES_N"] = datas.map(lambda d: d.month if d else 0)
     elif pagina == "custos":
-        nomes = saida["MES"].map(nome_mes)
-        saida["MES_N"] = nomes.map(lambda n: MESES.index(n) + 1 if n in MESES else 0)
-        # SUSTENTABILIDADE_CUSTO não tem coluna ANO: o ano sai de
-        # DATA_PAGAMENTO e, quando ela está vazia, de DATA_CRIACAO — que é a
-        # data do lançamento, não a da competência. É aproximação; sem a
-        # coluna ANO não há como acertar dezembro lançado em janeiro.
-        pagamento = saida[COL_DATA_PAGAMENTO].map(para_data)
-        criacao = (
-            saida["DATA_CRIACAO"].map(para_data)
-            if "DATA_CRIACAO" in saida.columns
-            else pagamento
-        )
-        saida["ANO_N"] = [
-            (p or c).year if (p or c) else 0 for p, c in zip(pagamento, criacao)
-        ]
+        # Régua do tempo: DATA_PAGAMENTO (regime de caixa). Ela define ano E
+        # mês. A coluna MES existe em paralelo, em texto e sem ano — usá-la
+        # obrigaria a adivinhar o ano em outro lugar. Lançamento sem data de
+        # pagamento fica sem competência e sai da série; quem chama expõe
+        # isso num cartão em vez de deixar a soma divergir em silêncio.
+        datas = saida[COL_DATA_PAGAMENTO].map(para_data)
+        saida["ANO_N"] = datas.map(lambda d: d.year if d else 0)
+        saida["MES_N"] = datas.map(lambda d: d.month if d else 0)
     else:
         saida["ANO_N"] = 0
         saida["MES_N"] = 0
@@ -3059,10 +3052,174 @@ def analise_licencas(df: pd.DataFrame) -> None:
     )
 
 
+# ------------------------------------------------
+# Análise: Custos e Orçamentos
+# ------------------------------------------------
+# A régua do tempo aqui é a DATA_PAGAMENTO — regime de caixa: o gasto conta
+# no mês em que o dinheiro saiu. Consequência inevitável: lançamento sem
+# data de pagamento não tem competência e fica fora da série. Em vez de
+# desaparecer em silêncio, ele aparece num cartão próprio, para a soma dos
+# gráficos poder ser conferida contra o cartão de valor total.
+def analise_custos(df: pd.DataFrame) -> None:
+    if "VALOR" not in df.columns:
+        st.info("Falta a coluna VALOR para montar a análise.")
+        return
+
+    # o que não entra na série temporal, e quanto isso representa
+    if COL_DATA_PAGAMENTO in df.columns:
+        sem_data = df[df[COL_DATA_PAGAMENTO].map(lambda v: para_data(v) is None)]
+    else:
+        sem_data = df.iloc[0:0]
+    valor_sem_data = pd.to_numeric(sem_data["VALOR"], errors="coerce").fillna(0).sum()
+
+    base = com_competencia("custos", df)
+    if base.empty:
+        st.warning(
+            "Nenhum lançamento com DATA_PAGAMENTO legível — sem isso não há "
+            "como montar a série por mês."
+        )
+        if len(sem_data):
+            st.caption(
+                f"{len(sem_data)} lançamento(s) sem data de pagamento, "
+                f"somando {fmt_brl(valor_sem_data)}."
+            )
+        return
+
+    base["VALOR_N"] = pd.to_numeric(base["VALOR"], errors="coerce").fillna(0)
+
+    # ---------- cartões ----------
+    resumo = resumo_anual(base, "VALOR_N")
+    cartoes = []
+    if resumo is not None:
+        cartoes.append(
+            (
+                f"Pago {resumo['faixa']}/{resumo['ano']}",
+                fmt_brl(resumo["total"]),
+                "neutro",
+                "por data de pagamento",
+            )
+        )
+        if resumo["tem_base"]:
+            cartoes.append(
+                (
+                    f"Mesmo período {resumo['ano'] - 1}",
+                    fmt_brl(resumo["total_anterior"]),
+                    "neutro",
+                    f"{resumo['faixa']}/{resumo['ano'] - 1}",
+                )
+            )
+        # gasto subindo é resultado ruim: seta invertida
+        cartao_ano, _ = comparativo_anual(base, "VALOR_N", subir_e_bom=False)
+        if cartao_ano is not None:
+            cartoes.append(cartao_ano)
+
+    serie = base.groupby(["ANO_N", "MES_N"], as_index=False)["VALOR_N"].sum()
+
+    def valor_em(ano: int, mes: int):
+        linha = serie[(serie["ANO_N"] == ano) & (serie["MES_N"] == mes)]
+        return float(linha["VALOR_N"].iloc[0]) if not linha.empty else None
+
+    if resumo is not None and resumo["meses"]:
+        ano_ref, mes_ref = resumo["ano"], resumo["meses"][-1]
+        atual = valor_em(ano_ref, mes_ref) or 0.0
+        ano_ant, mes_ant = (ano_ref, mes_ref - 1) if mes_ref > 1 else (ano_ref - 1, 12)
+        anterior = valor_em(ano_ant, mes_ant)
+        if anterior:
+            delta = (atual - anterior) / anterior
+            subiu = delta >= 0
+            cartoes.append(
+                (
+                    f"{MESES[mes_ref - 1]}/{ano_ref} vs. mês anterior",
+                    f"{'▲' if subiu else '▼'} {abs(delta):.1%}".replace(".", ","),
+                    "laranja" if subiu else "verde",
+                    f"{fmt_brl(atual)} · {MESES[mes_ant - 1]}/{ano_ant}: {fmt_brl(anterior)}",
+                )
+            )
+        else:
+            cartoes.append(
+                (
+                    f"{MESES[mes_ref - 1]}/{ano_ref}",
+                    fmt_brl(atual),
+                    "neutro",
+                    "sem mês anterior para comparar",
+                )
+            )
+
+    if len(sem_data):
+        cartoes.append(
+            (
+                "Sem data de pagamento",
+                fmt_brl(valor_sem_data),
+                "laranja",
+                f"{len(sem_data)} lançamento(s) fora da série",
+            )
+        )
+
+    linha_cartoes(cartoes)
+    if resumo is not None and resumo["tem_base"]:
+        st.caption(
+            "A comparação anual usa os mesmos meses nos dois anos "
+            f"({resumo['faixa']}) e só meses fechados — o mês corrente fica "
+            "de fora para não parecer economia."
+        )
+
+    if not TEM_PLOTLY:
+        aviso_sem_plotly()
+        return
+
+    # ---------- por ano ----------
+    st.divider()
+    esq, dir_ = st.columns([1, 2])
+
+    with esq:
+        st.markdown("**Pago por ano**")
+        anual = base.groupby("ANO_N", as_index=False)["VALOR_N"].sum()
+        fig = px.bar(anual, x="ANO_N", y="VALOR_N", text="VALOR_N")
+        fig.update_traces(
+            texttemplate="R$ %{text:,.0f}",
+            textposition="outside",
+            cliponaxis=False,
+            hovertemplate="%{x}<br>R$ %{y:,.2f}<extra></extra>",
+            marker_color=CORES_DV[0],
+        )
+        fig.update_xaxes(type="category")
+        fig.update_yaxes(range=[0, float(anual["VALOR_N"].max()) * 1.18])
+        st.plotly_chart(estiliza(fig), use_container_width=True)
+
+    # ---------- mês a mês, uma linha por ano ----------
+    with dir_:
+        st.markdown("**Pago por mês** — uma linha por ano")
+        grafico = serie.copy()
+        grafico["MES_NOME"] = grafico["MES_N"].map(lambda m: MESES[int(m) - 1])
+        grafico["ANO"] = grafico["ANO_N"].astype(str)
+        fig = px.line(
+            grafico.sort_values(["ANO_N", "MES_N"]),
+            x="MES_NOME", y="VALOR_N", color="ANO", markers=True,
+            category_orders={"MES_NOME": MESES},
+        )
+        fig.update_traces(
+            hovertemplate="%{x}<br>R$ %{y:,.2f}<extra>%{fullData.name}</extra>"
+        )
+        st.plotly_chart(estiliza(fig), use_container_width=True)
+
+    st.caption(
+        f"{len(base)} lançamento(s) com data de pagamento"
+        + (
+            f" · {len(sem_data)} sem data ({fmt_brl(valor_sem_data)}) não entram "
+            "nos gráficos"
+            if len(sem_data)
+            else ""
+        )
+        + ". A inclinação da linha é o mês contra o anterior; a distância "
+        "entre as linhas, o mesmo mês contra o ano passado."
+    )
+
+
 ANALISES = {
     "reciclaveis": analise_reciclaveis,
     "consumos": analise_consumos,
     "licencas": analise_licencas,
+    "custos": analise_custos,
 }
 
 
