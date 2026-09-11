@@ -2739,6 +2739,43 @@ RESUMOS_RELATORIO = {
 }
 
 
+def fmt_curto(valor: float) -> str:
+    """Valor encurtado para caber como rótulo dentro do gráfico.
+
+    12.345 vira '12,3 mil'. Rótulo de ponto disputa espaço com o vizinho:
+    o valor por extenso só cabe quando há poucos meses na série.
+    """
+    if abs(valor) >= 1_000_000:
+        texto = f"{valor / 1_000_000:,.1f}".replace(".", ",")
+        return f"R$ {texto} mi"
+    if abs(valor) >= 1_000:
+        texto = f"{valor / 1_000:,.1f}".replace(".", ",")
+        return f"R$ {texto} mil"
+    return f"R$ {valor:,.0f}".replace(",", ".")
+
+
+def variacao_mes_anterior(serie: pd.DataFrame, coluna: str) -> pd.DataFrame:
+    """Acrescenta VARIACAO: o mesmo mês contra o ano anterior, em %.
+
+    Fica nulo quando não há o mesmo mês no ano passado, ou quando o ano
+    passado fechou em zero — dividir por zero daria infinito, e "aumento de
+    ∞%" não informa nada.
+    """
+    saida = serie.copy()
+    anterior = {
+        (int(a) + 1, int(m)): v
+        for a, m, v in zip(saida["ANO_N"], saida["MES_N"], saida[coluna])
+    }
+    variacoes = []
+    for ano, mes, valor in zip(saida["ANO_N"], saida["MES_N"], saida[coluna]):
+        base = anterior.get((int(ano), int(mes)))
+        variacoes.append(
+            (valor - base) / base * 100 if base else None
+        )
+    saida["VARIACAO"] = variacoes
+    return saida
+
+
 def fmt_num(valor: float) -> str:
     texto = f"{valor:,.2f}".replace(",", "#").replace(".", ",").replace("#", ".")
     return texto
@@ -3059,6 +3096,19 @@ def com_competencia(pagina: str, df: pd.DataFrame) -> pd.DataFrame:
     return saida
 
 
+def seta_variacao(pct) -> str:
+    """'▲ 12,3%' / '▼ 8,0%'. Receita subindo é bom, então ▲ é positivo.
+
+    O teste de None não basta: ao virar coluna do pandas, o None da variação
+    sem par no ano anterior se converte em NaN, que passa por `is not None`
+    e imprimiria '▼ nan%'.
+    """
+    if pct is None or pd.isna(pct):
+        return ""
+    seta = "▲" if pct >= 0 else "▼"
+    return f"{seta} {abs(pct):,.1f}%".replace(".", ",")
+
+
 def sinal_valor(diferenca: float) -> str:
     return ("+" if diferenca >= 0 else "−") + fmt_brl(abs(diferenca))
 
@@ -3226,21 +3276,65 @@ def analise_reciclaveis(df: pd.DataFrame) -> None:
         altura = max(330, 26 * len(por_material) + 90)
         st.plotly_chart(estiliza(fig, altura), use_container_width=True)
 
-    st.markdown("**Receita por mês**")
-    mensal = base.groupby("COMPETENCIA", as_index=False)["TOTAL_N"].sum()
-    mensal["rotulo"] = [
-        f"{MESES[d.month - 1][:3]}/{d.year}" for d in mensal["COMPETENCIA"]
-    ]
-    fig = px.bar(mensal, x="rotulo", y="TOTAL_N")
-    fig.update_traces(
-        hovertemplate="%{x}<br>R$ %{y:,.2f}<extra></extra>",
-        marker_color=CORES_DV[1],
+    st.markdown("**Receita por mês** — uma linha por ano")
+    # Uma linha por ano, e não uma linha corrida no tempo: são 5 anos de
+    # lançamento, e a série contínua ficava com dezenas de pontos espremidos.
+    # Empilhando os anos sobre os mesmos 12 meses, a distância vertical entre
+    # as linhas JÁ É a comparação com o ano anterior.
+    mensal = (
+        base.groupby(["ANO_N", "MES_N"], as_index=False)["TOTAL_N"]
+        .sum()
+        .sort_values(["ANO_N", "MES_N"])
     )
-    fig.update_xaxes(type="category", tickangle=-60)
-    st.plotly_chart(estiliza(fig, 360), use_container_width=True)
+    mensal = variacao_mes_anterior(mensal, "TOTAL_N")
+    mensal["MES_NOME"] = mensal["MES_N"].map(lambda m: MESES[int(m) - 1])
+    mensal["ANO"] = mensal["ANO_N"].astype(str)
+
+    # O rótulo sai só no ano mais recente. Com 5 anos na tela, rotular todas
+    # as linhas deixaria 60 textos sobrepostos — ilegível, que é o defeito
+    # que o gráfico de barras já tinha.
+    ano_recente = int(mensal["ANO_N"].max())
+    mensal["TEXTO"] = [
+        (
+            fmt_curto(v)
+            + ("<br>" + seta_variacao(d) if pd.notna(d) else "")
+            if int(a) == ano_recente
+            else ""
+        )
+        for a, v, d in zip(mensal["ANO_N"], mensal["TOTAL_N"], mensal["VARIACAO"])
+    ]
+
+    fig = px.line(
+        mensal,
+        x="MES_NOME",
+        y="TOTAL_N",
+        color="ANO",
+        markers=True,
+        text="TEXTO",
+        category_orders={"MES_NOME": MESES},
+        custom_data=["VARIACAO"],
+    )
+    fig.update_traces(
+        texttemplate="%{text}",
+        textposition="top center",
+        cliponaxis=False,
+        hovertemplate=(
+            "%{x}<br>R$ %{y:,.2f}"
+            "<br>vs. mesmo mês do ano anterior: %{customdata[0]:+.1f}%"
+            "<extra>%{fullData.name}</extra>"
+        ),
+    )
+    # folga no topo para o rótulo de duas linhas não encostar na borda
+    fig.update_yaxes(range=[0, float(mensal["TOTAL_N"].max()) * 1.30])
+    st.plotly_chart(estiliza(fig, 420), use_container_width=True)
+
+    comparaveis = int(mensal["VARIACAO"].notna().sum())
     st.caption(
-        f"{len(mensal)} mês(es) com lançamento, de "
-        f"{mensal['rotulo'].iloc[0]} a {mensal['rotulo'].iloc[-1]}."
+        f"{len(mensal)} mês(es) com lançamento em {mensal['ANO'].nunique()} ano(s). "
+        f"O rótulo mostra o valor de {ano_recente} e, abaixo, a variação contra "
+        f"o mesmo mês do ano anterior — ▲ subiu, ▼ caiu. "
+        f"{comparaveis} mês(es) têm o mesmo mês no ano anterior para comparar; "
+        "nos demais a variação fica em branco em vez de virar 100%."
     )
 
 
