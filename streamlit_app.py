@@ -7,6 +7,7 @@ from pathlib import Path, PureWindowsPath
 from datetime import datetime, timedelta, date
 import os
 import tempfile
+import unicodedata
 import base64
 import io
 from PIL import Image, ImageOps
@@ -523,17 +524,46 @@ def opcoes_filial() -> list:
     return filiais_cadastradas() if PERFIL["admin"] else PERFIL["filiais"]
 
 
-def entrada_filial(chave: str, label: str = "FILIAL") -> None:
-    """Campo FILIAL como lista fechada, com texto livre como último recurso."""
+def entrada_filial(chave: str, label: str = "FILIAL", on_change=None, args=None) -> None:
+    """Campo FILIAL como lista fechada, com texto livre como último recurso.
+
+    on_change existe para as telas que preenchem outros campos a partir da
+    filial escolhida. O callback roda ANTES do rerun, que é o único momento
+    em que dá para escrever na key de um widget sem o Streamlit reclamar.
+    """
     opcoes = opcoes_filial()
     if not opcoes:
         st.text_input(
             label,
             key=chave,
             help=f"{TABELA_USUARIOS} não devolveu filiais — digite manualmente",
+            on_change=on_change,
+            args=args or (),
         )
         return
-    st.selectbox(label, opcoes, key=chave)
+    st.selectbox(label, opcoes, key=chave, on_change=on_change, args=args or ())
+
+
+def codigo_da_filial(nome) -> str:
+    """Nome escolhido no formulário -> COD_FILIAL, pelo cadastro de usuários.
+
+    É a tradução que permite cruzar o formulário com o histórico: as bases
+    antigas têm 98 grafias para 43 filiais, então casar por nome erraria.
+    """
+    alvo = str(nome or "").strip().upper()
+    if not alvo:
+        return ""
+    try:
+        df = carregar_usuarios()
+    except Exception:
+        return ""
+    col_filial = acha_coluna(df.columns, NOMES_FILIAL)
+    col_cod = acha_coluna(df.columns, NOMES_COD_FILIAL)
+    if df.empty or col_filial is None or col_cod is None:
+        return ""
+    iguais = df[col_filial].astype(str).str.strip().str.upper() == alvo
+    codigos = codigos_limpos(df[iguais][col_cod])
+    return codigos[0] if codigos else ""
 
 
 # ------------------------------------------------
@@ -1446,6 +1476,114 @@ def form_consumos() -> None:
 # 2) CONTROLE DE LICENÇAS  ->  SUSTENTABILIDADE_LICENCAS
 # ================================================
 CATEGORIAS_LICENCA = ["LICENCA", "AMBIENTAL"]
+
+# ------------------------------------------------------------
+# O que a tela consegue preencher sozinha
+# ------------------------------------------------------------
+# Duas leituras da própria tabela, em cache de 5 min: a lista de nomes já
+# usados em cada categoria, e o CNPJ/ROTA que cada filial mais usa. Nenhuma
+# coluna nova — é o histórico respondendo pelo que se repete.
+CONTROLE_OUTRO = "OUTRO — digitar"
+
+
+def chave_nome(texto) -> str:
+    """Nome sem acento e sem caixa, para reconhecer a mesma coisa escrita
+    de dois jeitos."""
+    limpo = unicodedata.normalize("NFKD", str(texto))
+    limpo = "".join(c for c in limpo if not unicodedata.combining(c))
+    return " ".join(limpo.upper().split())
+
+
+def mais_frequente(contagem: dict):
+    """A grafia mais usada; empate resolve pelo alfabeto, para não variar
+    entre execuções."""
+    return max(sorted(contagem), key=contagem.get) if contagem else None
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def catalogo_controles() -> dict:
+    """Nomes já lançados em cada categoria, uma grafia por nome.
+
+    'Caixa de Esgoto' (16x) e 'Caixa de esgoto' (12x) são o mesmo controle:
+    a lista fica com a grafia mais usada. Sem essa deduplicação a lista
+    suspensa nasceria com o item repetido — que é justamente o problema que
+    ela vem resolver.
+
+    A leitura é da tabela inteira, sem o recorte de filial: aqui não há dado
+    de lançamento, só o nome do tipo de controle, e uma filial nova
+    começaria com a lista vazia se dependesse dos próprios registros.
+    """
+    try:
+        cliente = conectar_supabase()
+        resposta = (
+            cliente.table(TABELAS_DB["licencas"])
+            .select("CATEGORIA,LICENCA")
+            .limit(5000)
+            .execute()
+        )
+    except Exception:
+        return {}
+
+    vistos = {}
+    for linha in resposta.data or []:
+        nome = str(linha.get("LICENCA") or "").strip()
+        categoria = str(linha.get("CATEGORIA") or "").strip().upper()
+        if not nome or not categoria:
+            continue
+        grafias = vistos.setdefault(categoria, {}).setdefault(chave_nome(nome), {})
+        grafias[nome] = grafias.get(nome, 0) + 1
+
+    return {
+        categoria: sorted(mais_frequente(g) for g in por_chave.values())
+        for categoria, por_chave in vistos.items()
+    }
+
+
+def opcoes_controle(tela: str) -> list:
+    return catalogo_controles().get(CATEGORIA_DA_TELA[tela], [])
+
+
+# ROTA e CNPJ não são consultados: são DERIVADOS do código da filial.
+#
+# A primeira versão tirava os dois do histórico, pegando o valor mais usado
+# por filial. Errava: a Matriz tinha 'ROTA 0.001' em 13 linhas (a planilha
+# de origem formatou '0001' como número) e a Pavuna tinha '36' em 10. O
+# valor mais frequente pode ser o erro mais frequente.
+#
+# Medido contra as 784 linhas da base: a rota é o código sem os zeros à
+# esquerda em 92% delas, e o CNPJ é a raiz da empresa + o código + dígito
+# verificador em 99,6% — os 39 CNPJs distintos da Della Volpe conferem sem
+# exceção. Derivar acerta 100%, inclusive nas 4 filiais que ainda não têm
+# nenhum lançamento e que o histórico não teria como responder.
+RAIZ_CNPJ = "61139432"
+_PESOS_CNPJ = [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]
+
+
+def digitos_cnpj(base12: str) -> str:
+    """Os dois dígitos verificadores, pelo módulo 11 da Receita."""
+    numeros = [int(c) for c in base12]
+    verificadores = []
+    for pesos in (_PESOS_CNPJ, [6] + _PESOS_CNPJ):
+        soma = sum(n * p for n, p in zip(numeros + verificadores, pesos))
+        resto = soma % 11
+        verificadores.append(0 if resto < 2 else 11 - resto)
+    return "".join(str(d) for d in verificadores)
+
+
+def cnpj_da_filial(codigo: str) -> str:
+    """'0001' -> '61.139.432/0001-72'."""
+    codigo = str(codigo or "").strip()
+    if not codigo.isdigit():
+        return ""
+    base = RAIZ_CNPJ + codigo.zfill(4)
+    d = digitos_cnpj(base)
+    return f"{base[:2]}.{base[2:5]}.{base[5:8]}/{base[8:12]}-{d}"
+
+
+def rota_da_filial(codigo: str) -> str:
+    """'0001' -> '1'; a rota é o código sem os zeros à esquerda."""
+    codigo = str(codigo or "").strip()
+    return str(int(codigo)) if codigo.isdigit() else ""
 OPCOES_STATUS = ["NO PRAZO", "VENCIDO", "RENOVAR", "NÃO SE APLICA"]
 TIPOS_EVIDENCIA = ["png", "jpg", "jpeg", "pdf"]
 # As duas telas usam o mesmo formulário. O prefixo é o que as separa: a
@@ -1458,6 +1596,7 @@ CAMPOS_LICENCA_BASE = (
     "rota",
     "cnpj",
     "licenca",
+    "licenca_novo",
     "dt_venc",
     "dias_pre",
     "status",
@@ -1468,6 +1607,28 @@ CAMPOS_LICENCA_BASE = (
 def campos_licenca(tela: str) -> tuple:
     prefixo = PREFIXO_LICENCA[tela]
     return tuple(f"{prefixo}_{campo}" for campo in CAMPOS_LICENCA_BASE)
+
+
+def nome_controle(tela: str) -> str:
+    """O nome escolhido na lista, ou o digitado quando a opção é OUTRO."""
+    prefixo = PREFIXO_LICENCA[tela]
+    escolhido = txt(f"{prefixo}_licenca")
+    if escolhido == CONTROLE_OUTRO:
+        return txt(f"{prefixo}_licenca_novo")
+    return escolhido
+
+
+def preenche_pela_filial(tela: str) -> None:
+    """CNPJ e ROTA da filial escolhida, calculados do COD_FILIAL.
+
+    Preenche, não trava: os dois campos continuam editáveis, porque existe
+    exceção real — há lançamento com CNPJ de outra empresa (a Splenda, na
+    Matriz), que não sai da raiz da Della Volpe.
+    """
+    prefixo = PREFIXO_LICENCA[tela]
+    codigo = codigo_da_filial(st.session_state.get(f"{prefixo}_filial"))
+    st.session_state[f"{prefixo}_cnpj"] = cnpj_da_filial(codigo)
+    st.session_state[f"{prefixo}_rota"] = rota_da_filial(codigo)
 
 
 # O file_uploader não zera ao apagar a key; troca-se a própria key por uma
@@ -1487,9 +1648,13 @@ def salvar_licenca(tela: str = "licencas") -> None:
     rotulo = "Licença" if tela == "licencas" else "Controle ambiental"
     arquivo = st.session_state.get(chave_evidencia(tela))
 
+    nome = nome_controle(tela)
+
     faltando = []
     if not txt(f"{prefixo}_filial"):
         faltando.append("FILIAL")
+    if not nome:
+        faltando.append(rotulo.upper())
     if arquivo is None:
         faltando.append(f"{rotulo} (evidência)")
     if faltando:
@@ -1502,7 +1667,7 @@ def salvar_licenca(tela: str = "licencas") -> None:
         "FILIAL": txt(f"{prefixo}_filial").upper(),
         "ROTA": txt(f"{prefixo}_rota"),  # coluna text no banco
         "CNPJ": txt(f"{prefixo}_cnpj"),
-        "LICENCA": txt(f"{prefixo}_licenca"),
+        "LICENCA": nome,
         COL_DT_VENCIMENTO: st.session_state.get(f"{prefixo}_dt_venc", date.today()),
         COL_DIAS: int(st.session_state.get(f"{prefixo}_dias_pre", 0)),
         "STATUS": st.session_state.get(f"{prefixo}_status", OPCOES_STATUS[0]),
@@ -1540,13 +1705,43 @@ def form_licencas(tela: str = "licencas") -> None:
     prefixo = PREFIXO_LICENCA[tela]
     rotulo = "LICENÇA" if tela == "licencas" else "CONTROLE"
 
+    opcoes = opcoes_controle(tela)
+
     c1, c2, c3 = st.columns(3)
     with c1:
-        entrada_filial(f"{prefixo}_filial")
-        st.text_input(rotulo, key=f"{prefixo}_licenca")
+        entrada_filial(
+            f"{prefixo}_filial",
+            on_change=preenche_pela_filial,
+            args=(tela,),
+        )
+        # primeira abertura da tela: o on_change ainda não disparou, então a
+        # sugestão é aplicada aqui, depois que o selectbox já existe
+        if f"{prefixo}_cnpj" not in st.session_state:
+            preenche_pela_filial(tela)
+
+        if opcoes:
+            escolha = st.selectbox(
+                rotulo,
+                opcoes + [CONTROLE_OUTRO],
+                key=f"{prefixo}_licenca",
+                help="Lista montada com o que já foi lançado, para o nome não "
+                     "variar entre registros",
+            )
+            if escolha == CONTROLE_OUTRO:
+                st.text_input(
+                    f"Qual {rotulo.lower()}?",
+                    key=f"{prefixo}_licenca_novo",
+                    placeholder="nome novo",
+                )
+        else:
+            st.text_input(rotulo, key=f"{prefixo}_licenca")
         st.selectbox("STATUS", OPCOES_STATUS, key=f"{prefixo}_status")
     with c2:
-        st.text_input("ROTA", key=f"{prefixo}_rota")
+        st.text_input(
+            "ROTA",
+            key=f"{prefixo}_rota",
+            help="Calculada pelo código da filial; corrija se for outra",
+        )
         st.date_input(
             "DT VENCIMENTO",
             value=date.today(),
@@ -1561,7 +1756,11 @@ def form_licencas(tela: str = "licencas") -> None:
             key=f"{prefixo}_dias_pre",
         )
     with c3:
-        st.text_input("CNPJ", key=f"{prefixo}_cnpj")
+        st.text_input(
+            "CNPJ",
+            key=f"{prefixo}_cnpj",
+            help="Calculado pelo código da filial; corrija se for outro",
+        )
 
     st.text_area("OBSERVAÇÃO", key=f"{prefixo}_obs")
 
