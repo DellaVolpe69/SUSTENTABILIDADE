@@ -283,6 +283,14 @@ COL_DIAS = "DIAS"  # dias pré-vencimento
 COL_DATA_PAGAMENTO = "DATA_PAGAMENTO"
 COL_BP = "BP FORNECEDOR"  # atenção: espaço no nome, não underscore
 
+# Código SAP da filial (COD_ORG_VENDAS), presente nas 5 tabelas. É ele, e
+# não o nome, que define o que cada usuário enxerga: o nome era escrito de
+# 98 formas diferentes ('CUBATÃO', 'Cubatão', 'cubatão') e a comparação do
+# PostgREST é por texto exato, então 37% dos lançamentos ficavam invisíveis
+# para o usuário da própria filial. Quem preenche a coluna é a trigger
+# trg_cod_filial no banco — o app não escreve esse campo.
+COL_COD_FILIAL = "COD_FILIAL"
+
 # Quantos registros as telas carregam. 1000 é o teto padrão do PostgREST
 # no Supabase (db-max-rows): pedir mais não traz mais.
 LIMITE_REGISTROS = 1000
@@ -336,14 +344,15 @@ def remover(tabela_app: str, id_registro) -> bool:
 def listar_registros(tabela_app: str, limite: int = LIMITE_REGISTROS) -> pd.DataFrame:
     """Lista os registros que o usuário logado pode ver.
 
-    Admin vê tudo; os demais recebem um filtro por FILIAL. Todas as quatro
-    tabelas têm essa coluna, então ela é o recorte único — sem isso um
-    usuário de filial leria o lançamento das outras.
+    Admin vê tudo; os demais recebem um filtro por COD_FILIAL. O recorte é
+    pelo código, não pelo nome: o `.in_()` compara texto exato no servidor,
+    e qualquer diferença de acento, caixa ou espaço no nome fazia a linha
+    desaparecer para quem era daquela filial.
     """
     cliente = conectar_supabase()
     consulta = cliente.table(TABELAS_DB[tabela_app]).select("*")
     if not PERFIL["admin"]:
-        consulta = consulta.in_("FILIAL", PERFIL["filiais"])
+        consulta = consulta.in_(COL_COD_FILIAL, PERFIL["codigos"])
     resposta = consulta.order("id", desc=True).limit(limite).execute()
     return pd.DataFrame(resposta.data or [])
 
@@ -372,6 +381,7 @@ ADMINS = {e.strip().lower() for e in USUARIOS_AUTORIZADOS}
 NOMES_EMAIL = {"USUARIO", "USUARIOS", "EMAIL", "EMAILS", "LOGIN", "USUARIOEMAIL"}
 NOMES_FILIAL = {"FILIAL", "FILIAIS"}
 NOMES_CNPJ = {"CNPJ", "CNPJS"}
+NOMES_COD_FILIAL = {"CODFILIAL", "CODIGOFILIAL", "CODORGVENDAS"}
 
 
 def chave_simples(nome) -> str:
@@ -403,6 +413,24 @@ def valores_limpos(serie) -> list:
     return sorted(vistos)
 
 
+def codigos_limpos(serie) -> list:
+    """COD_FILIAL é texto de 4 dígitos e precisa continuar sendo.
+
+    Se a coluna tiver sido criada como número em algum lugar do caminho, o
+    valor chega como 1 ou 1.0 e deixa de casar com '0001' no banco — o
+    zfill devolve os zeros à esquerda antes da comparação.
+    """
+    vistos = set()
+    for bruto in serie.dropna():
+        texto = str(bruto).strip()
+        if texto.endswith(".0"):
+            texto = texto[:-2]
+        if not texto:
+            continue
+        vistos.add(texto.zfill(4) if texto.isdigit() else texto.upper())
+    return sorted(vistos)
+
+
 def perfil_acesso(email: str) -> dict:
     """Devolve o que este e-mail pode ver."""
     email = (email or "").strip().lower()
@@ -411,7 +439,8 @@ def perfil_acesso(email: str) -> dict:
         "email": email,
         "admin": admin,
         "ok": admin,
-        "filiais": [],
+        "filiais": [],   # nomes — só para exibir na tela
+        "codigos": [],   # COD_FILIAL — é o que filtra de verdade
         "cnpjs": [],
         "erro": None,
     }
@@ -431,6 +460,7 @@ def perfil_acesso(email: str) -> dict:
 
     col_email = acha_coluna(df.columns, NOMES_EMAIL)
     col_filial = acha_coluna(df.columns, NOMES_FILIAL)
+    col_cod = acha_coluna(df.columns, NOMES_COD_FILIAL)
     col_cnpj = acha_coluna(df.columns, NOMES_CNPJ)
 
     if col_email is None or col_filial is None:
@@ -444,11 +474,27 @@ def perfil_acesso(email: str) -> dict:
     minhas = df[iguais]
     # o usuário pode ter mais de uma linha, uma por filial
     perfil["filiais"] = valores_limpos(minhas[col_filial])
+    if col_cod is not None:
+        perfil["codigos"] = codigos_limpos(minhas[col_cod])
     if col_cnpj is not None:
         perfil["cnpjs"] = valores_limpos(minhas[col_cnpj])
 
     if not admin:
-        perfil["ok"] = bool(perfil["filiais"])
+        # Sem código não há como filtrar, e cair de volta no nome traria
+        # de volta o problema que o COD_FILIAL veio resolver. Melhor barrar
+        # dizendo o que falta do que mostrar meia base sem avisar.
+        if col_cod is None:
+            perfil["erro"] = (
+                f"{TABELA_USUARIOS} não tem a coluna {COL_COD_FILIAL}. "
+                f"Colunas encontradas: {list(df.columns)}"
+            )
+        elif perfil["filiais"] and not perfil["codigos"]:
+            perfil["erro"] = (
+                f"seu cadastro em {TABELA_USUARIOS} está com "
+                f"{COL_COD_FILIAL} vazio para "
+                + (", ".join(perfil["filiais"]) or "a filial")
+            )
+        perfil["ok"] = bool(perfil["codigos"])
     return perfil
 
 
@@ -507,7 +553,7 @@ PERFIL = perfil_acesso(usuario_email_logado)
 if not PERFIL["ok"]:
     st.error(
         "Acesso não autorizado. Seu e-mail não está na lista do painel nem "
-        f"cadastrado em {TABELA_USUARIOS} com uma filial."
+        f"cadastrado em {TABELA_USUARIOS} com um {COL_COD_FILIAL}."
     )
     if PERFIL["erro"]:
         st.caption(f"Detalhe técnico: {PERFIL['erro']}")
