@@ -240,6 +240,9 @@ if me_resp.status_code != 200:
 
 user_info = me_resp.json()
 user_name = user_info.get("displayName", "Usuário")
+# jobTitle vem na resposta padrão do /me — não precisa de scope extra nem
+# de coluna no cadastro. Fica vazio quando o RH não preencheu no AD.
+user_cargo = user_info.get("jobTitle") or ""
 user_email = (
     user_info.get("mail")
     or user_info.get("userPrincipalName")
@@ -255,6 +258,7 @@ if not isinstance(user_email, str) or not user_email.strip():
 
 # Salva no session_state
 st.session_state["user_name"] = user_name
+st.session_state["user_cargo"] = user_cargo
 st.session_state["user_email"] = user_email
 
 # ================================================
@@ -274,6 +278,7 @@ TABELAS_DB = {
     "ambiental": "SUSTENTABILIDADE_LICENCAS",
     "custos": "SUSTENTABILIDADE_CUSTO",
     "reciclaveis": "SUSTENTABILIDADE_RECICLAVEIS",
+    "pgrs": "SUSTENTABILIDADE_PRGS",
 }
 
 # Controle de Licenças e Controles Ambientais são duas telas, mas uma tabela
@@ -284,7 +289,14 @@ CATEGORIA_DA_TELA = {"licencas": "LICENCA", "ambiental": "AMBIENTAL"}
 # O PGRS é cadastro anual por filial: uma linha por resíduo, não por mês.
 # Fica numa tabela própria porque o grão é outro — misturar com o consumo
 # mensal obrigaria toda soma mensal a lembrar de excluir essas linhas.
-TABELA_PGRS = "SUSTENTABILIDADE_PGRS"
+TABELA_PGRS = "SUSTENTABILIDADE_PRGS"
+
+# Nomes exatos como estão no Supabase — três têm espaço, não underscore.
+COL_IBAMA = "CODIGO DO RESIDUO IBAMA"
+COL_UNIDADE = "UNIDADE MEDIDA"
+COL_LOCAL = "LOCAL GERADO"
+COL_TRANSPORTE = "TRANSPORTE INTERNO"
+COL_MEDIA = "MEDIA ANUAL"
 
 # Nomes que apareciam cortados na tela do Supabase. Se algum divergir, o
 # insert falha citando a coluna — corrija aqui, num lugar só.
@@ -406,6 +418,35 @@ NOMES_EMAIL = {"USUARIO", "USUARIOS", "EMAIL", "EMAILS", "LOGIN", "USUARIOEMAIL"
 NOMES_FILIAL = {"FILIAL", "FILIAIS"}
 NOMES_CNPJ = {"CNPJ", "CNPJS"}
 NOMES_COD_FILIAL = {"CODFILIAL", "CODIGOFILIAL", "CODORGVENDAS"}
+
+# Colunas do cadastro que alimentam o cabeçalho do PGRS. Cada uma pode não
+# existir ainda — o app trata a ausência como campo em branco, não como erro.
+NOMES_NOME = {"NOME", "NOMECOMPLETO", "NOMEUSUARIO"}
+NOMES_CARGO = {"CARGO", "FUNCAO", "FUNÇÃO"}
+NOMES_ENDERECO = {"ENDERECO", "ENDEREÇO", "LOGRADOURO"}
+NOMES_MUNICIPIO = {"MUNICIPIO", "MUNICÍPIO", "CIDADE"}
+NOMES_UF = {"UF", "ESTADO"}
+NOMES_CEP = {"CEP"}
+NOMES_TELEFONE = {"TELEFONE", "FONE", "TEL"}
+
+# chave do cabeçalho -> nomes aceitos da coluna. A separação importa: os
+# de cima descrevem a FILIAL e se repetem em cada usuário dela; os de
+# baixo descrevem a PESSOA que está gerando o documento.
+COLUNAS_DA_FILIAL = {
+    "endereco": NOMES_ENDERECO,
+    "municipio": NOMES_MUNICIPIO,
+    "uf": NOMES_UF,
+    "cep": NOMES_CEP,
+    "telefone": NOMES_TELEFONE,
+}
+# Nome, cargo e e-mail vêm do Azure — o diretório da empresa é a fonte
+# certa para eles, e fica sempre em dia sem ninguém manter cadastro. O
+# cadastro entra só como rede, para o caso de o AD não ter jobTitle.
+COLUNAS_DA_PESSOA = {
+    "responsavel": NOMES_NOME,
+    "cargo": NOMES_CARGO,
+    "email": NOMES_EMAIL,
+}
 
 
 def chave_simples(nome) -> str:
@@ -2648,6 +2689,495 @@ def anos_pgrs() -> list:
     return list(range(atual + 1, 2018, -1))
 
 
+# De qual coluna de CONSUMO sai a média de cada resíduo. A chave é o
+# começo do nome normalizado, porque o nome no documento é mais longo que
+# o do app: "Recicláveis Papel/ Papelão/Plastico" -> RECICLAVEIS,
+# "Sólidos contaminados (Panos/Estopas..)" -> SOLIDOS_CONTAMINADOS.
+#
+# Dos 11 resíduos da Matriz, só estes 5 têm origem no app. Lona de freio,
+# lâmpadas, eletrônicos, baterias, pneu e borra de tinta não são medidos
+# em lugar nenhum do sistema — para eles a média continua digitada.
+ORIGEM_DO_RESIDUO = {
+    "COMUM": "COMUM",
+    "MADEIRA": "MADEIRA",
+    "RECICLAVEIS": "RECICLAVEIS",
+    "RECICLAVEL": "RECICLAVEIS",
+    "SOLIDOS": COL_SOLIDOS,
+    "OLEO": COL_OLEO,
+}
+
+
+def coluna_do_residuo(residuo) -> str:
+    """Nome do resíduo no PGRS -> coluna de CONSUMO, ou '' se não houver."""
+    chave = chave_nome(residuo)
+    if not chave:
+        return ""
+    for prefixo, coluna in ORIGEM_DO_RESIDUO.items():
+        if chave.startswith(prefixo):
+            return coluna
+    return ""
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def medias_do_ano(codigo_filial: str, ano: int) -> dict:
+    """Média anual de cada coluna de CONSUMO: soma do ano dividida por 12.
+
+    Doze, sempre — não a média dos meses lançados. É o que o documento da
+    Matriz faz: o óleo lubrificante tem 3 meses lançados em 2025 somando
+    5.500 L, e o PGRS registra 458,33, que é 5.500/12. Dividir pelos meses
+    presentes daria 1.833,33 e quadruplicaria o número justamente no
+    resíduo mais irregular.
+    """
+    if not codigo_filial:
+        return {}
+    try:
+        cliente = conectar_supabase()
+        resposta = (
+            cliente.table(TABELAS_DB["consumos"])
+            .select("*")
+            .eq(COL_COD_FILIAL, codigo_filial)
+            .eq("ANO", int(ano))
+            .limit(LIMITE_REGISTROS)
+            .execute()
+        )
+    except Exception:
+        return {}
+
+    df = pd.DataFrame(resposta.data or [])
+    if df.empty:
+        return {}
+
+    medias = {}
+    for coluna in set(ORIGEM_DO_RESIDUO.values()):
+        if coluna in df.columns:
+            soma = pd.to_numeric(df[coluna], errors="coerce").fillna(0).sum()
+            medias[coluna] = float(soma) / 12
+    return medias
+
+
+def media_anual_calculada(residuo, codigo_filial: str, ano: int):
+    """A média do resíduo, ou None quando ele não é medido no app."""
+    coluna = coluna_do_residuo(residuo)
+    if not coluna:
+        return None
+    return medias_do_ano(codigo_filial, ano).get(coluna)
+
+
+# Código IBAMA, classe e unidade são fixos por resíduo: escolher o resíduo
+# preenche os três. Lista tirada do PGRS da Matriz.
+RESIDUOS_PGRS = {
+    "Lona de freio": ("160112", "I", "KG"),
+    "Comum": ("-", "II", "KG"),
+    "Óleo Lubrificante": ("130201", "I", "LT"),
+    "Recicláveis Papel/Papelão/Plástico": ("1501", "II A", "KG"),
+    "Lâmpadas Fluorescentes": ("200121", "II A", "UN"),
+    "Eletrônicos": ("200136", "II B", "KG"),
+    "Baterias automotivas": ("F042", "I", "UN"),
+    "Pneu": ("160126", "II A", "KG"),
+    "Sólidos contaminados (Panos/Estopas)": ("190204", "I", "KG"),
+    "Borra de tinta": ("F017", "I", "LT"),
+    "Madeira": ("150103", "II B", "KG"),
+}
+
+FREQUENCIAS_PGRS = ["Sob Demanda", "1x semana", "2x semana", "3x semana",
+                    "Quinzenal", "Mensal", "Trimestral", "Semestral", "Anual"]
+
+# Colunas cujo valor se repete mas não cabe em lista fixa: coleta e
+# destinação dependem do fornecedor contratado, que muda. Vão como lista
+# aberta — montada com o que já foi lançado, mais "OUTRO — digitar".
+COLUNAS_ABERTAS_PGRS = (
+    COL_LOCAL,
+    "ACONDICIONAMENTO",
+    COL_TRANSPORTE,
+    "RESPONSAVEL",
+    "ARMAZENAGEM",
+    "COLETA",
+    "DESTINACAO",
+)
+
+# Ponto de partida de cada lista aberta, para a primeira filial não começar
+# com o campo em branco. Depois o histórico manda.
+SEMENTES_PGRS = {
+    COL_LOCAL: ["Manutenção", "Operação", "Escritórios", "Todos"],
+    "ACONDICIONAMENTO": ["Tambor", "Caçamba", "Gaiolas", "Caixas"],
+    COL_TRANSPORTE: ["Ajudante mecânica", "Ajudante geral", "Ajudante Borracharia",
+                     "Limpeza terceirizada", "Manutenção Predial", "T.I"],
+    "RESPONSAVEL": ["Meio Ambiente"],
+    "ARMAZENAGEM": ["Central de resíduos", "Caçamba"],
+    "COLETA": [],
+    "DESTINACAO": ["Aterro", "Reciclagem", "Rerrefino", "Alternativa Ambiental"],
+}
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def catalogo_pgrs() -> dict:
+    """Valores já usados em cada coluna aberta, uma grafia por valor.
+
+    Mesma deduplicação da lista de controles: 'Recliclagem' e 'reciclagem'
+    seriam dois destinos diferentes numa lista ingênua. A planilha de
+    origem já tinha esse par, além de 'Caçamba'/'Caçambas'.
+    """
+    try:
+        cliente = conectar_supabase()
+        resposta = (
+            cliente.table(TABELA_PGRS)
+            .select(",".join(f'"{c}"' for c in COLUNAS_ABERTAS_PGRS))
+            .limit(5000)
+            .execute()
+        )
+    except Exception:
+        resposta = types_vazio()
+
+    vistos = {c: {} for c in COLUNAS_ABERTAS_PGRS}
+    for linha in getattr(resposta, "data", None) or []:
+        for coluna in COLUNAS_ABERTAS_PGRS:
+            valor = str(linha.get(coluna) or "").strip()
+            if valor:
+                grafias = vistos[coluna].setdefault(chave_nome(valor), {})
+                grafias[valor] = grafias.get(valor, 0) + 1
+
+    catalogo = {}
+    for coluna in COLUNAS_ABERTAS_PGRS:
+        nomes = {mais_frequente(g) for g in vistos[coluna].values()}
+        nomes.update(SEMENTES_PGRS.get(coluna, []))
+        catalogo[coluna] = sorted(n for n in nomes if n)
+    return catalogo
+
+
+def types_vazio():
+    """Resposta vazia no formato do cliente, para a tela abrir sem tabela."""
+    import types as _t
+
+    return _t.SimpleNamespace(data=[])
+
+
+def entrada_aberta(coluna: str, chave: str, label: str = None) -> None:
+    """Selectbox com o que já existe + OUTRO para digitar um valor novo."""
+    opcoes = catalogo_pgrs().get(coluna, [])
+    label = label or coluna
+    escolha = st.selectbox(label, opcoes + [CONTROLE_OUTRO], key=chave)
+    if escolha == CONTROLE_OUTRO:
+        st.text_input(f"Qual {label.lower()}?", key=f"{chave}_novo",
+                      placeholder="valor novo")
+
+
+def valor_aberto(chave: str) -> str:
+    escolhido = txt(chave)
+    return txt(f"{chave}_novo") if escolhido == CONTROLE_OUTRO else escolhido
+
+
+# ------------------------------------------------
+# O cabeçalho do documento
+# ------------------------------------------------
+# Estes campos não existem em tabela nenhuma e não vamos criar coluna para
+# eles. Ficam como preenchimento de tela: quem gera o documento confere e
+# ajusta, e o session_state segura os valores durante a sessão. Razão
+# social e CNPJ são derivados — o CNPJ sai do código da filial.
+RAZAO_SOCIAL = "Transportes Della Volpe S/A"
+
+CAMPOS_CABECALHO = [
+    ("endereco", "Endereço"),
+    ("email", "E-mail"),
+    ("municipio", "Município"),
+    ("uf", "UF"),
+    ("cep", "CEP"),
+    ("telefone", "Telefone"),
+    ("email", "E-mail"),
+    ("responsavel", "Responsável Legal"),
+    ("cargo", "Cargo"),
+    ("atividade", "Discriminação da Atividade"),
+    ("licenca", "Licença de Operação"),
+    ("validade", "Validade"),
+    ("orgao", "Órgão expedidor"),
+]
+
+# O que já se sabe da Matriz, tirado do PGRS atual. Outras filiais começam
+# em branco até alguém preencher uma vez.
+CABECALHO_CONHECIDO = {
+    "0001": {
+        "endereco": "Rua: Lídice nº 22 — Parque Novo Mundo",
+        "municipio": "São Paulo",
+        "uf": "SP",
+        "cep": "02174-010",
+        "telefone": "(11) 2967-8573",
+        "email": "Juliana.mendes@dellavolpe.com.br",
+        "responsavel": "Juliana Mendes Barbosa",
+        "cargo": "Analista Sustentabilidade",
+        "atividade": "Transportes de produtos perigosos",
+        "orgao": "CETESB",
+    },
+}
+
+# Ordem e largura das colunas no PDF. As larguras somam 1 e são
+# proporcionais à largura útil da página: coluna estreita para CLASSE,
+# larga para RESÍDUO e TRANSPORTE INTERNO, que têm texto comprido.
+COLUNAS_PDF = [
+    ("ITEM", "ITEM", 0.03),
+    (COL_IBAMA, "CÓDIGO IBAMA", 0.07),
+    ("RESIDUO", "RESÍDUO", 0.13),
+    ("CLASSE", "CLASSE", 0.04),
+    (COL_UNIDADE, "UNIDADE", 0.05),
+    (COL_MEDIA, "MÉDIA ANUAL", 0.07),
+    (COL_LOCAL, "LOCAL GERADO", 0.07),
+    ("ACONDICIONAMENTO", "ACONDICIO-<br/>NAMENTO", 0.08),
+    (COL_TRANSPORTE, "TRANSPORTE<br/>INTERNO", 0.09),
+    ("RESPONSAVEL", "RESPON-<br/>SÁVEL", 0.07),
+    ("ARMAZENAGEM", "ARMAZE-<br/>NAGEM", 0.08),
+    ("COLETA", "COLETA", 0.07),
+    ("DESTINACAO", "DESTINAÇÃO", 0.08),
+    ("FREQUENCIA", "FREQUÊNCIA", 0.07),
+]
+
+try:
+    from reportlab.lib import colors as _cores_pdf
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.platypus import (
+        Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle,
+    )
+
+    TEM_PDF = True
+except Exception:  # pragma: no cover - depende do requirements.txt
+    TEM_PDF = False
+
+
+def valor_da_maioria(serie) -> str:
+    """O valor mais repetido da coluna, ignorando vazios.
+
+    Endereço, CEP e telefone descrevem a filial, mas ficam gravados em cada
+    usuário dela — umas cinco cópias. Se uma linha estiver vazia ou com um
+    erro de digitação, a maioria ainda devolve o valor certo, sem exigir
+    que as cinco estejam idênticas.
+    """
+    contagem = {}
+    for bruto in serie.dropna():
+        texto = str(bruto).strip()
+        if texto:
+            contagem[texto] = contagem.get(texto, 0) + 1
+    return mais_frequente(contagem) or ""
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def cabecalho_do_cadastro(codigo: str, email: str) -> dict:
+    """Cabeçalho montado a partir de SUSTENTABILIDADE_USUARIOS.
+
+    Colunas que ainda não existem simplesmente não aparecem no resultado —
+    o campo fica em branco na tela, para ser digitado, em vez de derrubar
+    a página com KeyError.
+    """
+    try:
+        df = carregar_usuarios()
+    except Exception:
+        return {}
+    if df.empty:
+        return {}
+
+    col_cod = acha_coluna(df.columns, NOMES_COD_FILIAL)
+    col_email = acha_coluna(df.columns, NOMES_EMAIL)
+    saida = {}
+
+    if col_cod is not None and codigo:
+        da_filial = df[codigos_limpos_serie(df[col_cod]) == codigo]
+        for chave, nomes in COLUNAS_DA_FILIAL.items():
+            coluna = acha_coluna(df.columns, nomes)
+            if coluna is not None and not da_filial.empty:
+                saida[chave] = valor_da_maioria(da_filial[coluna])
+
+    if col_email is not None and email:
+        iguais = df[col_email].astype(str).str.strip().str.lower() == email
+        minha = df[iguais]
+        for chave, nomes in COLUNAS_DA_PESSOA.items():
+            coluna = acha_coluna(df.columns, nomes)
+            if coluna is not None and not minha.empty:
+                valor = str(minha.iloc[0][coluna] or "").strip()
+                if valor:
+                    saida[chave] = valor
+
+    return {k: v for k, v in saida.items() if v}
+
+
+def codigos_limpos_serie(serie):
+    """codigos_limpos() devolve lista; aqui é preciso alinhar linha a linha."""
+    return serie.map(lambda v: (codigos_limpos(pd.Series([v])) or [""])[0])
+
+
+def cabecalho_do_azure() -> dict:
+    """Nome, cargo e e-mail de quem está logado, direto do Azure AD."""
+    valores = {
+        "responsavel": st.session_state.get("user_name", ""),
+        "cargo": st.session_state.get("user_cargo", ""),
+        "email": usuario_email_logado,
+    }
+    return {k: v for k, v in valores.items() if v and v != "Usuário"}
+
+
+def padroes_cabecalho(codigo: str) -> dict:
+    """O que a tela oferece preenchido, antes de qualquer digitação.
+
+    Precedência, do mais fraco para o mais forte: o PGRS antigo da Matriz
+    (rede, some quando o cadastro estiver completo), o cadastro de
+    usuários, e por último o Azure — que é o diretório da empresa e ganha
+    de qualquer cópia local do nome e do cargo.
+    """
+    padrao = dict(CABECALHO_CONHECIDO.get(codigo, {}))
+    padrao.update(cabecalho_do_cadastro(codigo, usuario_email_logado))
+    padrao.update(cabecalho_do_azure())
+    return padrao
+
+
+def cabecalho_pgrs(codigo: str) -> dict:
+    """Valores do cabeçalho: o que foi digitado, ou o que o cadastro deu."""
+    padrao = padroes_cabecalho(codigo)
+    return {
+        chave: txt(f"pgrs_cab_{chave}") or padrao.get(chave, "")
+        for chave, _ in CAMPOS_CABECALHO
+    }
+
+
+def form_cabecalho_pgrs(filial: str, codigo: str) -> None:
+    """Os campos do cabeçalho, num expansor para não roubar a tela."""
+    padrao = padroes_cabecalho(codigo)
+    do_cadastro = set(cabecalho_do_cadastro(codigo, usuario_email_logado))
+    do_cadastro |= set(cabecalho_do_azure())
+    faltando = [r for c, r in CAMPOS_CABECALHO if not padrao.get(c)]
+
+    with st.expander("Dados do cabeçalho do documento", expanded=bool(faltando)):
+        st.caption(
+            f"Razão social **{RAZAO_SOCIAL}** · CNPJ **{cnpj_da_filial(codigo)}** "
+            "— derivados, não se digita. Os demais vêm do cadastro de "
+            "usuários quando a coluna existe lá."
+        )
+        if faltando:
+            st.warning(
+                "Sem origem no cadastro, precisa ser digitado: "
+                + ", ".join(faltando)
+            )
+        colunas = st.columns(3)
+        for i, (chave, rotulo) in enumerate(CAMPOS_CABECALHO):
+            with colunas[i % 3]:
+                st.text_input(
+                    rotulo + (" ·" if chave in do_cadastro else ""),
+                    value=padrao.get(chave, ""),
+                    key=f"pgrs_cab_{chave}",
+                    help=("preenchido automaticamente — Azure ou cadastro"
+                          if chave in do_cadastro else None),
+                )
+
+
+def pdf_pgrs(filial: str, codigo: str, ano: int, df: pd.DataFrame):
+    """Monta o PDF do documento. Devolve (bytes, erro)."""
+    if not TEM_PDF:
+        return None, "reportlab não está instalado"
+
+    try:
+        buffer = io.BytesIO()
+        largura_pagina, altura_pagina = landscape(A4)
+        margem = 10 * mm
+        util = largura_pagina - 2 * margem
+
+        doc = SimpleDocTemplate(
+            buffer,
+            pagesize=landscape(A4),
+            leftMargin=margem, rightMargin=margem,
+            topMargin=margem, bottomMargin=margem,
+            title=f"PGRS {filial} {ano}",
+        )
+
+        titulo = ParagraphStyle("t", fontName="Helvetica-Bold", fontSize=13,
+                                textColor=_cores_pdf.HexColor("#1F7A3D"),
+                                alignment=1, spaceAfter=6)
+        rotulo = ParagraphStyle("r", fontName="Helvetica-Bold", fontSize=6.5,
+                                textColor=_cores_pdf.HexColor("#3C4B42"))
+        valor = ParagraphStyle("v", fontName="Helvetica", fontSize=7.5, leading=9)
+        celula = ParagraphStyle("c", fontName="Helvetica", fontSize=6.5, leading=8)
+        cabeca = ParagraphStyle("h", fontName="Helvetica-Bold", fontSize=6.5,
+                                leading=8, alignment=1,
+                                textColor=_cores_pdf.white)
+
+        dados = cabecalho_pgrs(codigo)
+        blocos = [
+            [("Razão social", RAZAO_SOCIAL), ("CNPJ", cnpj_da_filial(codigo))],
+            [("Endereço", dados["endereco"]), ("Município", dados["municipio"]),
+             ("UF", dados["uf"])],
+            [("CEP", dados["cep"]), ("Telefone", dados["telefone"]),
+             ("E-mail", dados["email"])],
+            [("Responsável Legal", dados["responsavel"]), ("Cargo", dados["cargo"])],
+            [("Discriminação da Atividade", dados["atividade"])],
+            [("Licença de Operação", dados["licenca"]),
+             ("Validade", dados["validade"]),
+             ("Órgão expedidor", dados["orgao"])],
+        ]
+
+        historia = [Paragraph(f"PGRS — {filial} · {ano}", titulo)]
+
+        for bloco in blocos:
+            linhas = [
+                [Paragraph(r, rotulo) for r, _ in bloco],
+                [Paragraph(v or "&nbsp;", valor) for _, v in bloco],
+            ]
+            largura_bloco = util / len(bloco)
+            tabela = Table(linhas, colWidths=[largura_bloco] * len(bloco))
+            tabela.setStyle(TableStyle([
+                ("GRID", (0, 0), (-1, -1), 0.5, _cores_pdf.HexColor("#9AA8A0")),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("TOPPADDING", (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+                ("BACKGROUND", (0, 0), (-1, 0), _cores_pdf.HexColor("#EDF3EE")),
+            ]))
+            historia.append(tabela)
+
+        historia.append(Spacer(1, 6 * mm))
+
+        corpo = [[Paragraph(r, cabeca) for _, r, _ in COLUNAS_PDF]]
+        for posicao, (_, linha) in enumerate(df.iterrows(), start=1):
+            visual = []
+            for coluna, _, _ in COLUNAS_PDF:
+                if coluna == "ITEM":
+                    # a numeração é a posição na tabela, não campo digitado:
+                    # no documento original ela já tinha saído de ordem
+                    bruto = str(posicao)
+                elif coluna == COL_MEDIA:
+                    numero = para_float(linha.get(coluna), None)
+                    bruto = fmt_num(numero) if numero is not None else "—"
+                else:
+                    bruto = texto_celula(linha.get(coluna))
+                visual.append(Paragraph(bruto or "&nbsp;", celula))
+            corpo.append(visual)
+
+        larguras = [util * peso for _, _, peso in COLUNAS_PDF]
+        tabela = Table(corpo, colWidths=larguras, repeatRows=1)
+        tabela.setStyle(TableStyle([
+            ("GRID", (0, 0), (-1, -1), 0.5, _cores_pdf.HexColor("#9AA8A0")),
+            ("BACKGROUND", (0, 0), (-1, 0), _cores_pdf.HexColor("#1F7A3D")),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("ALIGN", (0, 1), (0, -1), "CENTER"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 3),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1),
+             [_cores_pdf.white, _cores_pdf.HexColor("#F4F8F5")]),
+        ]))
+        historia.append(tabela)
+
+        rodape = ParagraphStyle("f", fontName="Helvetica-Oblique", fontSize=6.5,
+                                textColor=_cores_pdf.HexColor("#6B7A70"))
+        historia.append(Spacer(1, 4 * mm))
+        historia.append(Paragraph(
+            f"Gerado em {datetime.now().strftime('%d/%m/%Y %H:%M')} por "
+            f"{usuario_email_logado}. Médias anuais calculadas a partir dos "
+            f"lançamentos mensais de {ano} (soma ÷ 12).",
+            rodape,
+        ))
+
+        doc.build(historia)
+        return buffer.getvalue(), None
+    except Exception as erro:
+        return None, str(erro)
+
+
 def barra_paginas_consumos() -> str:
     """Navegação da tela de Consumos, na lateral esquerda."""
     st.session_state.setdefault("con_pagina", "lancamento")
@@ -2680,6 +3210,99 @@ def filtros_pgrs():
     return txt("pgrs_filial"), st.session_state.get("pgrs_ano", date.today().year)
 
 
+CAMPOS_PGRS = (
+    "pgrs_residuo", "pgrs_residuo_novo", "pgrs_ibama", "pgrs_classe",
+    "pgrs_unidade", "pgrs_frequencia",
+) + tuple(f"pgrs_{c}" for c in COLUNAS_ABERTAS_PGRS) + tuple(
+    f"pgrs_{c}_novo" for c in COLUNAS_ABERTAS_PGRS
+)
+
+
+def nome_residuo() -> str:
+    escolhido = txt("pgrs_residuo")
+    return txt("pgrs_residuo_novo") if escolhido == CONTROLE_OUTRO else escolhido
+
+
+def salvar_pgrs(filial: str, ano: int) -> None:
+    residuo = nome_residuo()
+    if not residuo:
+        st.session_state["msg_pgrs"] = ("warning", "Informe o RESÍDUO.")
+        return
+
+    dados = {
+        "FILIAL": filial,
+        "ANO": int(ano),
+        "RESIDUO": residuo,
+        COL_IBAMA: txt("pgrs_ibama"),
+        "CLASSE": txt("pgrs_classe"),
+        COL_UNIDADE: txt("pgrs_unidade"),
+        "FREQUENCIA": txt("pgrs_frequencia"),
+        "USUARIO": usuario_email_logado,
+    }
+    for coluna in COLUNAS_ABERTAS_PGRS:
+        dados[coluna] = valor_aberto(f"pgrs_{coluna}")
+
+    # A média NÃO é gravada: sai sempre de SUSTENTABILIDADE_CONSUMO, na
+    # hora de montar o documento. Os resíduos que ainda não têm coluna lá
+    # (lona de freio, lâmpadas, eletrônicos, baterias, pneu, borra de
+    # tinta) aparecem sem média até essas colunas existirem — melhor em
+    # branco do que um número digitado que ninguém sabe de onde veio.
+    concluir("msg_pgrs", "pgrs", dados, CAMPOS_PGRS)
+
+
+def form_pgrs(filial: str, ano: int) -> None:
+    st.caption(f"Lançando em **{filial}** · **{ano}** — o cabeçalho vem dos filtros acima.")
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        escolha = st.selectbox(
+            "RESÍDUO",
+            list(RESIDUOS_PGRS) + [CONTROLE_OUTRO],
+            key="pgrs_residuo",
+            help="Escolher o resíduo preenche código IBAMA, classe e unidade",
+        )
+        if escolha == CONTROLE_OUTRO:
+            st.text_input("Qual resíduo?", key="pgrs_residuo_novo",
+                          placeholder="nome do resíduo")
+
+    # código, classe e unidade são fixos por resíduo: vêm preenchidos e
+    # continuam editáveis, porque resíduo novo não está na lista
+    padrao = RESIDUOS_PGRS.get(escolha, ("", "", ""))
+    with c2:
+        st.text_input("CÓDIGO IBAMA", value=padrao[0], key="pgrs_ibama")
+        st.text_input("CLASSE", value=padrao[1], key="pgrs_classe")
+    with c3:
+        st.text_input("UNIDADE", value=padrao[2], key="pgrs_unidade")
+        st.selectbox("FREQUÊNCIA", FREQUENCIAS_PGRS, key="pgrs_frequencia")
+
+    st.markdown("**Manejo**")
+    c1, c2, c3 = st.columns(3)
+    abertas = list(COLUNAS_ABERTAS_PGRS)
+    for i, coluna in enumerate(abertas):
+        with [c1, c2, c3][i % 3]:
+            entrada_aberta(coluna, f"pgrs_{coluna}")
+
+    st.markdown("**Média anual**")
+    residuo = nome_residuo()
+    calculada = media_anual_calculada(residuo, codigo_da_filial(filial), ano)
+    if calculada is None:
+        st.warning(
+            f"**{residuo or 'Este resíduo'}** ainda não tem coluna em "
+            "Consumos e Serviços, então não há de onde tirar a média. "
+            "Ela aparece em branco no documento até a coluna existir."
+        )
+    else:
+        st.info(
+            f"Calculada de Consumos e Serviços: **{fmt_num(calculada)}** "
+            f"{padrao[2].lower() or ''} — soma de {ano} dividida por 12. "
+            "Não é digitada: sai sempre do lançamento mensal."
+        )
+
+    st.button("💾 Salvar resíduo", key="btn_salvar_pgrs", type="primary",
+              on_click=salvar_pgrs, args=(filial, ano))
+    render_msg("msg_pgrs")
+
+
 def pagina_pgrs() -> None:
     st.markdown("### PGRS — Plano de Gerenciamento de Resíduos Sólidos")
     st.caption(
@@ -2706,6 +3329,18 @@ def pagina_pgrs() -> None:
         return
 
     st.divider()
+    aba_doc, aba_novo, aba_editar = st.tabs(
+        ["📄 Documento", "➕ Novo resíduo", "✏️ Editar / Excluir"]
+    )
+    with aba_doc:
+        documento_pgrs(filial, ano, codigo)
+    with aba_novo:
+        form_pgrs(filial, ano)
+    with aba_editar:
+        painel_edicao("pgrs")
+
+
+def documento_pgrs(filial: str, ano: int, codigo: str) -> None:
     try:
         cliente = conectar_supabase()
         consulta = (
@@ -2732,8 +3367,71 @@ def pagina_pgrs() -> None:
         st.info(f"Nenhum resíduo cadastrado em {filial} para {ano}.")
         return
 
+    df = com_media_anual(df, codigo, ano)
     st.dataframe(limpa_ordem_pgrs(df), hide_index=True, use_container_width=True)
-    st.caption(f"{len(df)} resíduo(s) em {filial} · {ano}.")
+
+    calculados = int(df["ORIGEM DA MEDIA"].eq("Consumos e Serviços").sum())
+    st.caption(
+        f"{len(df)} resíduo(s) em {filial} · {ano}. "
+        f"{calculados} com média vinda de Consumos e Serviços "
+        f"(soma do ano ÷ 12). Os outros {len(df) - calculados} ficam em "
+        "branco enquanto não tiverem coluna lá."
+    )
+
+    st.divider()
+    form_cabecalho_pgrs(filial, codigo)
+
+    conteudo, erro = pdf_pgrs(filial, codigo, ano, df)
+    esq, dir_ = st.columns([1, 3])
+    if conteudo is not None:
+        marca = datetime.now().strftime("%Y%m%d_%H%M")
+        with esq:
+            st.download_button(
+                "📄 Extrair PDF",
+                data=conteudo,
+                file_name=f"PGRS_{codigo}_{ano}_{marca}.pdf",
+                mime="application/pdf",
+                type="primary",
+                use_container_width=True,
+            )
+        with dir_:
+            st.caption(
+                "O PDF sai com o cabeçalho acima e os resíduos desta filial "
+                "neste ano. É ele o registro do que foi entregue — o banco "
+                "continua vivo e recalcula a média a cada consulta."
+            )
+    else:
+        with esq:
+            st.download_button(
+                "⬇️ Extrair CSV",
+                data=limpa_ordem_pgrs(df).to_csv(index=False, sep=";").encode("utf-8-sig"),
+                file_name=f"PGRS_{codigo}_{ano}.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+        with dir_:
+            st.warning(
+                "PDF indisponível: falta o pacote **reportlab** no "
+                f"requirements.txt. Enquanto isso sai o CSV. ({erro})"
+            )
+
+
+def com_media_anual(df: pd.DataFrame, codigo: str, ano: int) -> pd.DataFrame:
+    """Preenche a média calculada por cima da digitada, quando existe.
+
+    A coluna de origem fica visível de propósito: sem ela ninguém sabe se
+    aquele número veio do lançamento mensal ou da mão de alguém.
+    """
+    saida = df.copy()
+    medias, origens = [], []
+    for _, linha in saida.iterrows():
+        calculada = media_anual_calculada(linha.get("RESIDUO"), codigo, ano)
+        medias.append(calculada)
+        origens.append("Consumos e Serviços" if calculada is not None
+                       else "sem coluna em Consumos")
+    saida[COL_MEDIA] = medias
+    saida["ORIGEM DA MEDIA"] = origens
+    return saida
 
 
 def limpa_ordem_pgrs(df: pd.DataFrame) -> pd.DataFrame:
