@@ -298,6 +298,16 @@ COL_BP = "BP FORNECEDOR"  # atenção: espaço no nome, não underscore
 # trg_cod_filial no banco — o app não escreve esse campo.
 COL_COD_FILIAL = "COD_FILIAL"
 
+# Esgoto não tinha coluna nenhuma; água e energia tinham só a medição.
+# O valor em R$ existe apenas para as três utilidades: o dinheiro dos
+# resíduos já vive em SUSTENTABILIDADE_CUSTO (saída) e em
+# SUSTENTABILIDADE_RECICLAVEIS (entrada), e duas fontes para o mesmo
+# número sempre divergem.
+COL_ESGOTO = "ESGOTO_M3"
+COL_ESGOTO_VALOR = "ESGOTO_VALOR"
+COL_AGUA_VALOR = "AGUA_VALOR"
+COL_ENERGIA_VALOR = "ENERGIA_VALOR"
+
 # Quantos registros as telas carregam. 1000 é o teto padrão do PostgREST
 # no Supabase (db-max-rows): pedir mais não traz mais.
 LIMITE_REGISTROS = 1000
@@ -1399,7 +1409,11 @@ CAMPOS_CONSUMO = (
     "con_solidos",
     "con_oleo",
     "con_agua",
+    "con_agua_valor",
+    "con_esgoto",
+    "con_esgoto_valor",
     "con_energia",
+    "con_energia_valor",
     "con_comum",
     "con_madeira",
     "con_reciclaveis",
@@ -1427,7 +1441,11 @@ def salvar_consumo() -> None:
         COL_SOLIDOS: st.session_state.get("con_solidos", 0.0),
         COL_OLEO: st.session_state.get("con_oleo", 0.0),
         "AGUA": st.session_state.get("con_agua", 0.0),
+        COL_AGUA_VALOR: st.session_state.get("con_agua_valor", 0.0),
+        COL_ESGOTO: st.session_state.get("con_esgoto", 0.0),
+        COL_ESGOTO_VALOR: st.session_state.get("con_esgoto_valor", 0.0),
         "ENERGIA": st.session_state.get("con_energia", 0.0),
+        COL_ENERGIA_VALOR: st.session_state.get("con_energia_valor", 0.0),
         "COMUM": st.session_state.get("con_comum", 0.0),
         "MADEIRA": st.session_state.get("con_madeira", 0.0),
         "RECICLAVEIS": st.session_state.get("con_reciclaveis", 0.0),
@@ -1453,20 +1471,36 @@ def form_consumos() -> None:
     with c3:
         st.selectbox("MÊS", MESES, index=date.today().month - 1, key="con_mes")
 
-    st.markdown("**Valores pagos por serviço (R$)**")
-    st.caption("Todos os campos abaixo são valor em reais, não quantidade.")
+    # As utilidades vêm em par — medição e conta — e o par fica lado a
+    # lado de propósito: quem digita está olhando a mesma fatura, e ver os
+    # dois juntos é o que permite notar m³ alto com valor baixo (ou o
+    # contrário) na hora do lançamento, não três meses depois no gráfico.
+    st.markdown("**Utilidades** — medição e valor da conta")
+    med, val = st.columns(2)
+    with med:
+        st.number_input("ÁGUA (m³)", min_value=0.0, step=0.01, format="%.2f", key="con_agua")
+        st.number_input("ESGOTO (m³)", min_value=0.0, step=0.01, format="%.2f", key="con_esgoto")
+        st.number_input("ENERGIA (kWh)", min_value=0.0, step=0.01, format="%.2f", key="con_energia")
+    with val:
+        st.number_input("ÁGUA (R$)", min_value=0.0, step=0.01, format="%.2f", key="con_agua_valor")
+        st.number_input("ESGOTO (R$)", min_value=0.0, step=0.01, format="%.2f", key="con_esgoto_valor")
+        st.number_input("ENERGIA (R$)", min_value=0.0, step=0.01, format="%.2f", key="con_energia_valor")
+
+    st.markdown("**Resíduos e demais** — só medição")
+    st.caption(
+        "O valor pago destes não entra aqui: ele já é lançado em Custos e "
+        "Orçamentos (saída) e em Recicláveis (entrada)."
+    )
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.number_input("SÓLIDOS CONTAMINADOS (R$)", min_value=0.0, step=0.01, format="%.2f", key="con_solidos")
-        st.number_input("ENERGIA (R$)", min_value=0.0, step=0.01, format="%.2f", key="con_energia")
-        st.number_input("RECICLÁVEIS (R$)", min_value=0.0, step=0.01, format="%.2f", key="con_reciclaveis")
+        st.number_input("SÓLIDOS CONTAMINADOS (kg)", min_value=0.0, step=0.01, format="%.2f", key="con_solidos")
+        st.number_input("MADEIRA (kg)", min_value=0.0, step=0.01, format="%.2f", key="con_madeira")
     with c2:
-        st.number_input("ÓLEO LUBRIFICANTE (R$)", min_value=0.0, step=0.01, format="%.2f", key="con_oleo")
-        st.number_input("COMUM (R$)", min_value=0.0, step=0.01, format="%.2f", key="con_comum")
-        st.number_input("CO² (R$)", min_value=0.0, step=0.01, format="%.2f", key="con_co2")
+        st.number_input("ÓLEO LUBRIFICANTE (L)", min_value=0.0, step=0.01, format="%.2f", key="con_oleo")
+        st.number_input("RECICLÁVEIS (kg)", min_value=0.0, step=0.01, format="%.2f", key="con_reciclaveis")
     with c3:
-        st.number_input("ÁGUA (R$)", min_value=0.0, step=0.01, format="%.2f", key="con_agua")
-        st.number_input("MADEIRA (R$)", min_value=0.0, step=0.01, format="%.2f", key="con_madeira")
+        st.number_input("COMUM (kg)", min_value=0.0, step=0.01, format="%.2f", key="con_comum")
+        st.number_input("CO² (t)", min_value=0.0, step=0.01, format="%.2f", key="con_co2")
 
     st.button("💾 Salvar", key="btn_salvar_con", on_click=salvar_consumo, type="primary")
     render_msg("msg_consumos")
@@ -2033,14 +2067,18 @@ CAMPOS_EDICAO = {
         campo("FILIAL", "filial"),
         campo("ANO", "inteiro", minimo=1990, maximo=2100),
         campo("MES", "mes", "MÊS"),
-        campo(COL_SOLIDOS, "decimal", "SÓLIDOS CONTAMINADOS (R$)"),
-        campo(COL_OLEO, "decimal", "ÓLEO LUBRIFICANTE (R$)"),
-        campo("AGUA", "decimal", "ÁGUA (R$)"),
-        campo("ENERGIA", "decimal", "ENERGIA (R$)"),
-        campo("COMUM", "decimal", "COMUM (R$)"),
-        campo("MADEIRA", "decimal", "MADEIRA (R$)"),
-        campo("RECICLAVEIS", "decimal", "RECICLÁVEIS (R$)"),
-        campo("CO2", "decimal", "CO² (R$)"),
+        campo(COL_SOLIDOS, "decimal", "SÓLIDOS CONTAMINADOS (kg)"),
+        campo(COL_OLEO, "decimal", "ÓLEO LUBRIFICANTE (L)"),
+        campo("AGUA", "decimal", "ÁGUA (m³)"),
+        campo(COL_AGUA_VALOR, "decimal", "ÁGUA (R$)"),
+        campo(COL_ESGOTO, "decimal", "ESGOTO (m³)"),
+        campo(COL_ESGOTO_VALOR, "decimal", "ESGOTO (R$)"),
+        campo("ENERGIA", "decimal", "ENERGIA (kWh)"),
+        campo(COL_ENERGIA_VALOR, "decimal", "ENERGIA (R$)"),
+        campo("COMUM", "decimal", "COMUM (kg)"),
+        campo("MADEIRA", "decimal", "MADEIRA (kg)"),
+        campo("RECICLAVEIS", "decimal", "RECICLÁVEIS (kg)"),
+        campo("CO2", "decimal", "CO² (t)"),
     ],
     "licencas": [
         campo("FILIAL", "filial"),
@@ -2935,16 +2973,36 @@ def aviso_sem_plotly() -> None:
 # Serviços da tela de Consumos. Todas as colunas são VALOR PAGO em reais —
 # não são volumes. Por isso somar entre elas faz sentido e a matriz tem
 # coluna de total.
+# (coluna, rótulo, unidade). A unidade não está no nome da coluna no
+# Supabase — os nomes ficaram como nasceram, para não quebrar quem lê a
+# tabela por fora. Então ela mora aqui, e é ela que decide o que pode ser
+# somado com o quê: kg com kg, nunca kg com kWh.
+# (coluna da medição, rótulo, unidade, coluna do valor em R$ ou None).
 SERVICOS_CONSUMO = [
-    (COL_SOLIDOS, "Sólidos contaminados"),
-    (COL_OLEO, "Óleo lubrificante"),
-    ("AGUA", "Água"),
-    ("ENERGIA", "Energia"),
-    ("COMUM", "Comum"),
-    ("MADEIRA", "Madeira"),
-    ("RECICLAVEIS", "Recicláveis"),
-    ("CO2", "CO²"),
+    (COL_SOLIDOS, "Sólidos contaminados", "kg", None),
+    (COL_OLEO, "Óleo lubrificante", "L", None),
+    ("AGUA", "Água", "m³", COL_AGUA_VALOR),
+    (COL_ESGOTO, "Esgoto", "m³", COL_ESGOTO_VALOR),
+    ("ENERGIA", "Energia", "kWh", COL_ENERGIA_VALOR),
+    ("COMUM", "Comum", "kg", None),
+    ("MADEIRA", "Madeira", "kg", None),
+    ("RECICLAVEIS", "Recicláveis", "kg", None),
+    ("CO2", "CO²", "t", None),
 ]
+
+# Duas famílias somam entre si, e só elas: os resíduos, todos em kg, dão o
+# total destinado; as utilidades, todas em R$, dão a conta do período.
+RESIDUOS_KG = [c for c, _, u, _ in SERVICOS_CONSUMO if u == "kg"]
+UTILIDADES_RS = [v for _, _, _, v in SERVICOS_CONSUMO if v]
+TOTAL_RESIDUOS = "Resíduos sólidos (soma)"
+TOTAL_UTILIDADES = "Utilidades (soma)"
+
+UNIDADE_DO_SERVICO = {c: u for c, _, u, _ in SERVICOS_CONSUMO}
+
+
+def fmt_unidade(valor: float, unidade: str) -> str:
+    """Número em pt-BR com a unidade colada. Nunca com R$."""
+    return f"{fmt_num(valor)} {unidade}"
 
 
 # ------------------------------------------------
@@ -2964,8 +3022,15 @@ ROTULO_CONTAGEM = {
 
 CARTOES_PAGINA = {
     # a coluna pode ser uma lista: soma horizontal dos serviços
+    # O cartão que existia aqui somava as 8 colunas e escrevia R$ no
+    # resultado — kg + litro + m³ + kWh + tonelada num número só. Saía
+    # "R$ 9.951.353,33", que não era dinheiro nem era nada. No lugar,
+    # três cartões que só somam o que é somável.
     "consumos": [
-        ("Valor total", [c for c, _ in SERVICOS_CONSUMO], "brl", "verde", None),
+        ("Resíduos sólidos", RESIDUOS_KG, "kg", "verde", None),
+        ("Utilidades pagas", UTILIDADES_RS, "brl", "laranja", None),
+        ("Água", "AGUA", "m3", "neutro", None),
+        ("Energia", "ENERGIA", "kwh", "neutro", None),
     ],
     # formato "cont" conta linhas em vez de somar uma coluna
     "licencas": [
@@ -2989,11 +3054,14 @@ CARTOES_PAGINA = {
 }
 
 
+UNIDADES_CARTAO = {"kg": "kg", "m3": "m³", "kwh": "kWh", "t": "t", "L": "L"}
+
+
 def formata_valor(valor: float, formato: str) -> str:
     if formato == "brl":
         return fmt_brl(valor)
-    if formato == "kg":
-        return f"{fmt_num(valor)} kg"
+    if formato in UNIDADES_CARTAO:
+        return fmt_unidade(valor, UNIDADES_CARTAO[formato])
     return fmt_num(valor)
 
 
@@ -3109,8 +3177,9 @@ def seta_variacao(pct) -> str:
     return f"{seta} {abs(pct):,.1f}%".replace(".", ",")
 
 
-def sinal_valor(diferenca: float) -> str:
-    return ("+" if diferenca >= 0 else "−") + fmt_brl(abs(diferenca))
+def sinal_valor(diferenca: float, formata=None) -> str:
+    formata = formata or fmt_brl
+    return ("+" if diferenca >= 0 else "−") + formata(abs(diferenca))
 
 
 def resumo_anual(base: pd.DataFrame, coluna: str):
@@ -3166,11 +3235,16 @@ def resumo_anual(base: pd.DataFrame, coluna: str):
     }
 
 
-def comparativo_anual(base: pd.DataFrame, coluna: str, subir_e_bom: bool = True):
+def comparativo_anual(base: pd.DataFrame, coluna: str, subir_e_bom: bool = True,
+                      formata=None):
     """Cartão de variação ano a ano. Devolve (cartão, faixa) ou (None, None).
 
     subir_e_bom=False inverte a cor: gasto subindo é resultado ruim.
+    formata troca o R$ por outra unidade — consumo é medido em kg, m³ e kWh,
+    e o percentual seria o mesmo, mas o valor absoluto na nota sairia com
+    cifrão em cima de quilo.
     """
+    formata = formata or fmt_brl
     resumo = resumo_anual(base, coluna)
     if resumo is None:
         return None, None
@@ -3204,8 +3278,8 @@ def comparativo_anual(base: pd.DataFrame, coluna: str, subir_e_bom: bool = True)
             f"{ano_atual} vs {ano_atual - 1}",
             f"{seta} {percentual}",
             cor,
-            f"{sinal_valor(diferenca)} · {faixa}: "
-            f"{fmt_brl(total_atual)} contra {fmt_brl(total_anterior)}"
+            f"{sinal_valor(diferenca, formata)} · {faixa}: "
+            f"{formata(total_atual)} contra {formata(total_anterior)}"
             + (" · mês corrente ainda aberto" if aberto else ""),
         ),
         faixa,
@@ -3347,30 +3421,59 @@ def analise_consumos(df: pd.DataFrame) -> None:
         st.info("Sem registros com ANO e MÊS válidos para montar a análise.")
         return
 
-    colunas = [(c, r) for c, r in SERVICOS_CONSUMO if c in base.columns]
-    for coluna, _ in colunas:
+    colunas = [(c, r, u, v) for c, r, u, v in SERVICOS_CONSUMO if c in base.columns]
+    numericas = [c for c, _, _, _ in colunas]
+    numericas += [v for _, _, _, v in colunas if v and v in base.columns]
+    for coluna in numericas:
         base[coluna] = pd.to_numeric(base[coluna], errors="coerce").fillna(0)
 
-    # ---------- filtro de serviço ----------
-    rotulos = {r: c for c, r in colunas}
-    escolhidos = st.multiselect(
-        "Serviços",
-        list(rotulos),
-        key="ind_consumo_servicos",
-        help="Vazio = todos os serviços somados",
-    )
-    selecionados = [rotulos[r] for r in escolhidos] or [c for c, _ in colunas]
-    base["VALOR"] = base[selecionados].sum(axis=1)
-    titulo_selecao = ", ".join(escolhidos) if escolhidos else "todos os serviços"
+    # ---------- escolha do serviço ----------
+    # Aqui havia um multiselect que somava os serviços marcados, herança de
+    # quando se acreditava que todas as colunas eram reais. Cada uma tem a
+    # sua unidade: somar duas produz um número que não existe. Agora é um
+    # serviço por vez — com uma exceção legítima, os resíduos sólidos, que
+    # estão todos em kg e cuja soma é justamente o total destinado.
+    kg = [(c, r) for c, r, u, _ in colunas if u == "kg"]
+    rs = [(v, r) for _, r, _, v in colunas if v and v in base.columns]
+    rotulo_residuos = f"{TOTAL_RESIDUOS} (kg)"
+    rotulo_utilidades = f"{TOTAL_UTILIDADES} (R$)"
 
-    # ---------- cartões de gasto ----------
+    # Cada opção carrega as colunas que soma e a unidade do resultado. As
+    # duas primeiras são as únicas somas legítimas entre serviços: kg com
+    # kg, R$ com R$.
+    catalogo = {}
+    if len(kg) > 1:
+        catalogo[rotulo_residuos] = ([c for c, _ in kg], "kg",
+                                     " + ".join(r.lower() for _, r in kg))
+    if len(rs) > 1:
+        catalogo[rotulo_utilidades] = ([c for c, _ in rs], "R$",
+                                       " + ".join(r.lower() for _, r in rs))
+    for coluna, rotulo, unidade_col, coluna_valor in colunas:
+        catalogo[f"{rotulo} ({unidade_col})"] = ([coluna], unidade_col, rotulo.lower())
+        if coluna_valor and coluna_valor in base.columns:
+            catalogo[f"{rotulo} (R$)"] = ([coluna_valor], "R$", f"{rotulo.lower()} pago")
+
+    escolha = st.selectbox(
+        "Serviço",
+        list(catalogo),
+        key="ind_consumo_servico",
+        help="Um de cada vez: unidades diferentes não somam entre si",
+    )
+    selecionados, unidade, titulo_selecao = catalogo[escolha]
+
+    base["VALOR"] = base[selecionados].sum(axis=1)
+
+    def formata(valor):
+        return fmt_brl(valor) if unidade == "R$" else fmt_unidade(valor, unidade)
+
+    # ---------- cartões ----------
     resumo = resumo_anual(base, "VALOR")
     cartoes = []
     if resumo is not None:
         cartoes.append(
             (
-                f"Gasto {resumo['faixa']}/{resumo['ano']}",
-                fmt_brl(resumo["total"]),
+                f"{resumo['faixa']}/{resumo['ano']}",
+                formata(resumo["total"]),
                 "neutro",
                 titulo_selecao,
             )
@@ -3379,13 +3482,15 @@ def analise_consumos(df: pd.DataFrame) -> None:
             cartoes.append(
                 (
                     f"Mesmo período {resumo['ano'] - 1}",
-                    fmt_brl(resumo["total_anterior"]),
+                    formata(resumo["total_anterior"]),
                     "neutro",
                     f"{resumo['faixa']}/{resumo['ano'] - 1}",
                 )
             )
-        # gasto subindo é resultado ruim: a seta inverte
-        cartao_ano, _ = comparativo_anual(base, "VALOR", subir_e_bom=False)
+        # consumir mais é resultado ruim: a seta inverte
+        cartao_ano, _ = comparativo_anual(
+            base, "VALOR", subir_e_bom=False, formata=formata
+        )
         if cartao_ano is not None:
             cartoes.append(cartao_ano)
 
@@ -3410,16 +3515,48 @@ def analise_consumos(df: pd.DataFrame) -> None:
                     f"{MESES[mes_ref - 1]}/{ano_ref} vs. mês anterior",
                     f"{'▲' if subiu else '▼'} {abs(delta):.1%}".replace(".", ","),
                     "laranja" if subiu else "verde",
-                    f"{fmt_brl(atual)} · {MESES[mes_ant - 1]}/{ano_ant}: {fmt_brl(anterior)}",
+                    f"{formata(atual)} · {MESES[mes_ant - 1]}/{ano_ant}: "
+                    f"{formata(anterior)}",
                 )
             )
         else:
             cartoes.append(
                 (
                     f"{MESES[mes_ref - 1]}/{ano_ref}",
-                    fmt_brl(atual),
+                    formata(atual),
                     "neutro",
                     "sem mês anterior para comparar",
+                )
+            )
+
+    # ---------- preço unitário ----------
+    # É o número que só passou a existir agora que medição e conta estão na
+    # mesma linha: R$ por m³, R$ por kWh. Só aparece quando o serviço
+    # escolhido tem as duas pontas e as duas estão preenchidas — dividir por
+    # medição zerada daria infinito, e por medição ausente, mentira.
+    par = next(
+        (
+            (c, v, r, u)
+            for c, r, u, v in colunas
+            if v and v in base.columns and c in selecionados + [v]
+        ),
+        None,
+    )
+    if par is not None and resumo is not None:
+        coluna_medida, coluna_valor, nome_servico, unidade_medida = par
+        meses = resumo["meses"]
+        periodo = base[
+            (base["ANO_N"] == resumo["ano"]) & (base["MES_N"].isin(meses))
+        ]
+        medida = float(periodo[coluna_medida].sum())
+        pago = float(periodo[coluna_valor].sum())
+        if medida > 0 and pago > 0:
+            cartoes.append(
+                (
+                    f"R$ por {unidade_medida}",
+                    fmt_brl(pago / medida),
+                    "neutro",
+                    f"{nome_servico} · {resumo['faixa']}/{resumo['ano']}",
                 )
             )
 
@@ -3433,16 +3570,40 @@ def analise_consumos(df: pd.DataFrame) -> None:
 
     # ---------- matriz ano x serviço ----------
     st.divider()
-    st.markdown("**Valor pago por ano e serviço (R$)**")
-    matriz = base.groupby("ANO_N")[[c for c, _ in colunas]].sum()
+    st.markdown("**Medição por ano e serviço**")
+    da_matriz = [c for c, _, _, _ in colunas]
+    da_matriz += [v for _, _, _, v in colunas if v and v in base.columns]
+    matriz = base.groupby("ANO_N")[da_matriz].sum()
     matriz.index.name = "ANO"
-    matriz["TOTAL"] = matriz.sum(axis=1)
-    exibir = matriz.rename(columns=dict(colunas)).sort_index(ascending=False)
-    st.dataframe(exibir.map(fmt_brl), use_container_width=True)
+
+    unidade_da_coluna = {c: u for c, _, u, _ in colunas}
+    renomear = {c: f"{r} ({u})" for c, r, u, _ in colunas}
+    for _, rotulo, _, coluna_valor in colunas:
+        if coluna_valor and coluna_valor in base.columns:
+            unidade_da_coluna[coluna_valor] = "R$"
+            renomear[coluna_valor] = f"{rotulo} (R$)"
+    if len(kg) > 1:
+        matriz[TOTAL_RESIDUOS] = matriz[[c for c, _ in kg]].sum(axis=1)
+        unidade_da_coluna[TOTAL_RESIDUOS] = "kg"
+        renomear[TOTAL_RESIDUOS] = rotulo_residuos
+    if len(rs) > 1:
+        matriz[TOTAL_UTILIDADES] = matriz[[c for c, _ in rs]].sum(axis=1)
+        unidade_da_coluna[TOTAL_UTILIDADES] = "R$"
+        renomear[TOTAL_UTILIDADES] = rotulo_utilidades
+
+    exibir = matriz.rename(columns=renomear).sort_index(ascending=False)
+    for origem, rotulo in renomear.items():
+        u = unidade_da_coluna[origem]
+        exibir[rotulo] = exibir[rotulo].map(
+            fmt_brl if u == "R$" else (lambda v, u=u: fmt_unidade(v, u))
+        )
+    st.dataframe(exibir, use_container_width=True)
     st.caption(
-        "Todos os campos são valores pagos, então a coluna TOTAL soma a "
-        "linha. A matriz ignora o filtro de serviço acima, de propósito: "
-        "ela é a visão completa do ano."
+        "Não há coluna de total da linha: somar kg com m³ e kWh não produz "
+        "número nenhum. As duas somas que existem são as das famílias que "
+        "compartilham unidade — resíduos em kg e utilidades em R$. A matriz "
+        "ignora o filtro de serviço acima, de propósito: ela é a visão "
+        "completa do ano."
     )
 
     if not TEM_PLOTLY:
@@ -3454,7 +3615,7 @@ def analise_consumos(df: pd.DataFrame) -> None:
     # inclinação da linha é o mês contra o anterior, e a distância entre as
     # linhas é o mesmo mês contra o ano passado
     st.divider()
-    st.markdown(f"**Gasto mensal — {titulo_selecao}**")
+    st.markdown(f"**{escolha} por mês**")
     grafico = serie.copy()
     grafico["MES_NOME"] = grafico["MES_N"].map(lambda m: MESES[int(m) - 1])
     grafico["ANO"] = grafico["ANO_N"].astype(str)
@@ -3464,14 +3625,18 @@ def analise_consumos(df: pd.DataFrame) -> None:
         x="MES_NOME", y="VALOR", color="ANO", markers=True,
         category_orders={"MES_NOME": MESES},
     )
+    sufixo = "" if unidade == "R$" else " " + unidade
+    prefixo = "R$ " if unidade == "R$" else ""
     fig.update_traces(
-        hovertemplate="%{x}<br>R$ %{y:,.2f}<extra>%{fullData.name}</extra>"
+        hovertemplate="%{x}<br>" + prefixo + "%{y:,.2f}" + sufixo
+        + "<extra>%{fullData.name}</extra>"
     )
     st.plotly_chart(estiliza(fig, 380), use_container_width=True)
     st.caption(
         "Cada linha é um ano. A inclinação mostra o mês contra o anterior; "
         "a distância entre as linhas, o mesmo mês contra o ano passado."
     )
+
 
 # ------------------------------------------------
 # Análise: Licenças
