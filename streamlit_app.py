@@ -1351,6 +1351,46 @@ div[data-testid="stButton"] button:focus-visible {
     outline: 2px solid #E4610A !important; outline-offset: 2px;
 }
 
+/* st.download_button tem data-testid="stDownloadButton", não
+   "stButton" — então nenhuma regra acima o alcançava, e ele ficava com
+   o primário padrão do Streamlit: fundo coral e rótulo escuro. As
+   mesmas regras, com o testid trocado. */
+div[data-testid="stDownloadButton"] button {
+    background: #FFFFFF !important; color: #1F7A3D !important;
+    border: 1px solid #C9DACE !important; border-radius: 10px !important;
+    padding: 0.45em 1.1em !important; width: auto !important;
+    font-weight: 600 !important; font-size: 0.84rem !important;
+    box-shadow: none !important; transition: 0.15s ease;
+}
+div[data-testid="stDownloadButton"] button:hover {
+    background: #EAF3EC !important; border-color: #1F7A3D !important;
+    transform: none !important;
+}
+/* o rótulo é um <p> dentro do <button>: sem herdar, ele fica preto sobre o
+   verde do botão primário */
+div[data-testid="stDownloadButton"] button * { color: inherit !important; }
+div[data-testid="stDownloadButton"] button[kind="primary"],
+div[data-testid="stDownloadButton"] button[kind="primary"] * {
+    background: #1F7A3D !important; color: #FFFFFF !important;
+    border-color: #1F7A3D !important;
+}
+div[data-testid="stDownloadButton"] button[kind="primary"] * { background: none !important; }
+div[data-testid="stDownloadButton"] button[kind="primary"]:hover,
+div[data-testid="stDownloadButton"] button[kind="primary"]:hover * {
+    background: #14532D !important; border-color: #14532D !important;
+    color: #FFFFFF !important;
+}
+div[data-testid="stDownloadButton"] button[kind="primary"]:hover * { background: none !important; }
+div[data-testid="stDownloadButton"] button:disabled,
+div[data-testid="stDownloadButton"] button:disabled * {
+    background: #F1F4F1 !important; color: #A9B5AD !important;
+    border-color: #E3EAE4 !important;
+}
+div[data-testid="stDownloadButton"] button:disabled * { background: none !important; }
+div[data-testid="stDownloadButton"] button:focus-visible {
+    outline: 2px solid #E4610A !important; outline-offset: 2px;
+}
+
 /* cartões de indicador: st.metric não aceita cor por cartão, então estes
    são HTML — dá para pintar fundo, faixa lateral e o número */
 .dv-kpi {
