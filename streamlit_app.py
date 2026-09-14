@@ -1685,6 +1685,83 @@ def campos_licenca(tela: str) -> tuple:
     return tuple(f"{prefixo}_{campo}" for campo in CAMPOS_LICENCA_BASE)
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def catalogo_residuos() -> dict:
+    """Resíduo -> (código IBAMA, classe, unidade), do que já foi lançado.
+
+    A lista fixa RESIDUOS_PGRS é semente: cobre os 11 da Matriz. Quem
+    lançar um resíduo novo em qualquer filial passa a alimentar o
+    preenchimento automático das próximas, sem redeploy.
+
+    A chave é o nome normalizado (sem acento, sem caixa), então
+    'Óleo Lubrificante' e 'OLEO LUBRIFICANTE' são o mesmo resíduo. Para
+    cada campo vale a grafia mais usada — uma linha com a classe errada
+    não contamina o preenchimento.
+    """
+    catalogo = {
+        chave_nome(nome): {"nome": nome, COL_IBAMA: {codigo: 1},
+                           "CLASSE": {classe: 1}, COL_UNIDADE: {unidade: 1}}
+        for nome, (codigo, classe, unidade) in RESIDUOS_PGRS.items()
+    }
+
+    try:
+        cliente = conectar_supabase()
+        resposta = (
+            cliente.table(TABELA_PGRS)
+            .select(f'"RESIDUO","{COL_IBAMA}","CLASSE","{COL_UNIDADE}"')
+            .limit(5000)
+            .execute()
+        )
+        linhas = resposta.data or []
+    except Exception:
+        linhas = []
+
+    for linha in linhas:
+        nome = str(linha.get("RESIDUO") or "").strip()
+        if not nome:
+            continue
+        registro = catalogo.setdefault(
+            chave_nome(nome),
+            {"nome": nome, COL_IBAMA: {}, "CLASSE": {}, COL_UNIDADE: {}},
+        )
+        for coluna in (COL_IBAMA, "CLASSE", COL_UNIDADE):
+            valor = str(linha.get(coluna) or "").strip()
+            if valor:
+                registro[coluna][valor] = registro[coluna].get(valor, 0) + 1
+
+    return {
+        chave: (
+            registro["nome"],
+            mais_frequente(registro[COL_IBAMA]) or "",
+            mais_frequente(registro["CLASSE"]) or "",
+            mais_frequente(registro[COL_UNIDADE]) or "",
+        )
+        for chave, registro in catalogo.items()
+    }
+
+
+def opcoes_residuo() -> list:
+    """Nomes oferecidos na lista, sem repetir grafia."""
+    return sorted(nome for nome, _, _, _ in catalogo_residuos().values())
+
+
+def preenche_pelo_residuo() -> None:
+    """Código IBAMA, classe e unidade do resíduo escolhido.
+
+    Precisa ser callback, não `value=` no text_input: uma vez que a key
+    existe no session_state, o Streamlit ignora o argumento `value` e o
+    campo congela no primeiro valor. O on_change roda antes do rerun, que
+    é o único momento em que dá para escrever na key de um widget.
+    """
+    dados = catalogo_residuos().get(chave_nome(nome_residuo()))
+    if not dados:
+        return
+    _, codigo, classe, unidade = dados
+    st.session_state["pgrs_ibama"] = codigo
+    st.session_state["pgrs_classe"] = classe
+    st.session_state["pgrs_unidade"] = unidade
+
+
 def nome_controle(tela: str) -> str:
     """O nome escolhido na lista, ou o digitado quando a opção é OUTRO."""
     prefixo = PREFIXO_LICENCA[tela]
@@ -2177,6 +2254,7 @@ CAMPOS_EDICAO = {
 RESUMO_REGISTRO = {
     "consumos": ("FILIAL", "MES", "ANO"),
     "licencas": ("FILIAL", "LICENCA", COL_DT_VENCIMENTO),
+    "ambiental": ("FILIAL", "LICENCA", COL_DT_VENCIMENTO),
     "custos": ("FORNECEDOR", "NOTA_BOLETO", "VALOR"),
     "reciclaveis": ("FILIAL", "MATERIAL", "DATA"),
 }
@@ -2415,6 +2493,7 @@ FILTROS_EDICAO = {
     "ambiental": ("FILIAL", "LICENCA"),
     "custos": ("FILIAL", "FORNECEDOR"),
     "reciclaveis": ("FILIAL", "MATERIAL"),
+    "pgrs": ("FILIAL", "RESIDUO"),
 }
 TODAS = "(todas)"
 
@@ -2781,6 +2860,31 @@ RESIDUOS_PGRS = {
 
 FREQUENCIAS_PGRS = ["Sob Demanda", "1x semana", "2x semana", "3x semana",
                     "Quinzenal", "Mensal", "Trimestral", "Semestral", "Anual"]
+
+# A aba Editar/Excluir usa a mesma maquinaria das outras telas — ela lê
+# CAMPOS_EDICAO pela chave da tela. Sem esta entrada o painel carregava os
+# registros e não desenhava campo nenhum: dava para excluir, não para
+# editar. Fica aqui embaixo, e não junto das outras, porque depende de
+# FREQUENCIAS_PGRS, definida logo acima.
+CAMPOS_EDICAO["pgrs"] = [
+    campo("FILIAL", "filial"),
+    campo("ANO", "inteiro", minimo=1990, maximo=2100),
+    campo("RESIDUO", "texto", "RESÍDUO"),
+    campo(COL_IBAMA, "texto", "CÓDIGO IBAMA"),
+    campo("CLASSE", "texto"),
+    campo(COL_UNIDADE, "texto", "UNIDADE"),
+    campo(COL_LOCAL, "texto", "LOCAL GERADO"),
+    campo("ACONDICIONAMENTO", "texto"),
+    campo(COL_TRANSPORTE, "texto", "TRANSPORTE INTERNO"),
+    campo("RESPONSAVEL", "texto", "RESPONSÁVEL"),
+    campo("ARMAZENAGEM", "texto"),
+    campo("COLETA", "texto"),
+    campo("DESTINACAO", "texto", "DESTINAÇÃO"),
+    campo("FREQUENCIA", "opcoes", "FREQUÊNCIA", opcoes=FREQUENCIAS_PGRS),
+]
+
+RESUMO_REGISTRO["pgrs"] = ("FILIAL", "ANO", "RESIDUO")
+
 
 # Colunas cujo valor se repete mas não cabe em lista fixa: coleta e
 # destinação dependem do fornecedor contratado, que muda. Vão como lista
@@ -3256,22 +3360,27 @@ def form_pgrs(filial: str, ano: int) -> None:
     with c1:
         escolha = st.selectbox(
             "RESÍDUO",
-            list(RESIDUOS_PGRS) + [CONTROLE_OUTRO],
+            opcoes_residuo() + [CONTROLE_OUTRO],
             key="pgrs_residuo",
+            on_change=preenche_pelo_residuo,
             help="Escolher o resíduo preenche código IBAMA, classe e unidade",
         )
         if escolha == CONTROLE_OUTRO:
             st.text_input("Qual resíduo?", key="pgrs_residuo_novo",
-                          placeholder="nome do resíduo")
+                          placeholder="nome do resíduo",
+                          on_change=preenche_pelo_residuo)
 
-    # código, classe e unidade são fixos por resíduo: vêm preenchidos e
-    # continuam editáveis, porque resíduo novo não está na lista
-    padrao = RESIDUOS_PGRS.get(escolha, ("", "", ""))
+    # primeira abertura da tela: o on_change ainda não disparou
+    if "pgrs_ibama" not in st.session_state:
+        preenche_pelo_residuo()
+
+    # código, classe e unidade são fixos por resíduo, mas seguem editáveis:
+    # resíduo novo não está no catálogo e precisa ser digitado uma vez
     with c2:
-        st.text_input("CÓDIGO IBAMA", value=padrao[0], key="pgrs_ibama")
-        st.text_input("CLASSE", value=padrao[1], key="pgrs_classe")
+        st.text_input("CÓDIGO IBAMA", key="pgrs_ibama")
+        st.text_input("CLASSE", key="pgrs_classe")
     with c3:
-        st.text_input("UNIDADE", value=padrao[2], key="pgrs_unidade")
+        st.text_input("UNIDADE", key="pgrs_unidade")
         st.selectbox("FREQUÊNCIA", FREQUENCIAS_PGRS, key="pgrs_frequencia")
 
     st.markdown("**Manejo**")
@@ -3293,7 +3402,7 @@ def form_pgrs(filial: str, ano: int) -> None:
     else:
         st.info(
             f"Calculada de Consumos e Serviços: **{fmt_num(calculada)}** "
-            f"{padrao[2].lower() or ''} — soma de {ano} dividida por 12. "
+            f"{txt('pgrs_unidade').lower()} — soma de {ano} dividida por 12. "
             "Não é digitada: sai sempre do lançamento mensal."
         )
 
