@@ -2877,7 +2877,6 @@ RAZAO_SOCIAL = "Transportes Della Volpe S/A"
 
 CAMPOS_CABECALHO = [
     ("endereco", "Endereço"),
-    ("email", "E-mail"),
     ("municipio", "Município"),
     ("uf", "UF"),
     ("cep", "CEP"),
