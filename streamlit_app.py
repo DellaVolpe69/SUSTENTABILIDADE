@@ -2979,19 +2979,22 @@ def valor_aberto(chave: str) -> str:
 # social e CNPJ são derivados — o CNPJ sai do código da filial.
 RAZAO_SOCIAL = "Transportes Della Volpe S/A"
 
+# (chave, rótulo, tipo). O tipo é "texto" em tudo menos na validade, que
+# é data de verdade — digitar dd/mm/aaaa à mão convida a erro de formato,
+# e o documento vai para órgão ambiental.
 CAMPOS_CABECALHO = [
-    ("endereco", "Endereço"),
-    ("municipio", "Município"),
-    ("uf", "UF"),
-    ("cep", "CEP"),
-    ("telefone", "Telefone"),
-    ("email", "E-mail"),
-    ("responsavel", "Responsável Legal"),
-    ("cargo", "Cargo"),
-    ("atividade", "Discriminação da Atividade"),
-    ("licenca", "Licença de Operação"),
-    ("validade", "Validade"),
-    ("orgao", "Órgão expedidor"),
+    ("endereco", "Endereço", "texto"),
+    ("municipio", "Município", "texto"),
+    ("uf", "UF", "texto"),
+    ("cep", "CEP", "texto"),
+    ("telefone", "Telefone", "texto"),
+    ("email", "E-mail", "texto"),
+    ("responsavel", "Responsável Legal", "texto"),
+    ("cargo", "Cargo", "texto"),
+    ("atividade", "Discriminação da Atividade", "texto"),
+    ("licenca", "Licença de Operação", "texto"),
+    ("validade", "Validade", "data"),
+    ("orgao", "Órgão expedidor", "texto"),
 ]
 
 # O que já se sabe da Matriz, tirado do PGRS atual. Outras filiais começam
@@ -3132,10 +3135,17 @@ def padroes_cabecalho(codigo: str) -> dict:
 def cabecalho_pgrs(codigo: str) -> dict:
     """Valores do cabeçalho: o que foi digitado, ou o que o cadastro deu."""
     padrao = padroes_cabecalho(codigo)
-    return {
-        chave: txt(f"pgrs_cab_{chave}") or padrao.get(chave, "")
-        for chave, _ in CAMPOS_CABECALHO
-    }
+    valores = {}
+    for chave, _, tipo in CAMPOS_CABECALHO:
+        bruto = st.session_state.get(f"pgrs_cab_{chave}") or padrao.get(chave, "")
+        if tipo == "data":
+            # o date_input devolve um objeto date; no documento tem de sair
+            # no formato brasileiro, não no ISO do str()
+            data = para_data(bruto)
+            valores[chave] = data.strftime("%d/%m/%Y") if data else ""
+        else:
+            valores[chave] = str(bruto or "").strip()
+    return valores
 
 
 def form_cabecalho_pgrs(filial: str, codigo: str) -> None:
@@ -3143,7 +3153,7 @@ def form_cabecalho_pgrs(filial: str, codigo: str) -> None:
     padrao = padroes_cabecalho(codigo)
     do_cadastro = set(cabecalho_do_cadastro(codigo, usuario_email_logado))
     do_cadastro |= set(cabecalho_do_azure())
-    faltando = [r for c, r in CAMPOS_CABECALHO if not padrao.get(c)]
+    faltando = [r for c, r, _ in CAMPOS_CABECALHO if not padrao.get(c)]
 
     with st.expander("Dados do cabeçalho do documento", expanded=bool(faltando)):
         st.caption(
@@ -3157,8 +3167,18 @@ def form_cabecalho_pgrs(filial: str, codigo: str) -> None:
                 + ", ".join(faltando)
             )
         colunas = st.columns(3)
-        for i, (chave, rotulo) in enumerate(CAMPOS_CABECALHO):
+        for i, (chave, rotulo, tipo) in enumerate(CAMPOS_CABECALHO):
             with colunas[i % 3]:
+                if tipo == "data":
+                    # value=None nasce vazio: sem isso o campo mostraria a
+                    # data de hoje, que pareceria uma validade de verdade
+                    st.date_input(
+                        rotulo,
+                        value=para_data(padrao.get(chave)),
+                        format="DD/MM/YYYY",
+                        key=f"pgrs_cab_{chave}",
+                    )
+                    continue
                 st.text_input(
                     rotulo + (" ·" if chave in do_cadastro else ""),
                     value=padrao.get(chave, ""),
