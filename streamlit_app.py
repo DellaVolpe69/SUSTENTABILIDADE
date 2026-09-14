@@ -281,6 +281,11 @@ TABELAS_DB = {
 # enxerga a sua — ninguém precisa escolher nada num campo.
 CATEGORIA_DA_TELA = {"licencas": "LICENCA", "ambiental": "AMBIENTAL"}
 
+# O PGRS é cadastro anual por filial: uma linha por resíduo, não por mês.
+# Fica numa tabela própria porque o grão é outro — misturar com o consumo
+# mensal obrigaria toda soma mensal a lembrar de excluir essas linhas.
+TABELA_PGRS = "SUSTENTABILIDADE_PGRS"
+
 # Nomes que apareciam cortados na tela do Supabase. Se algum divergir, o
 # insert falha citando a coluna — corrija aqui, num lugar só.
 COL_SOLIDOS = "SOLIDOS_CONTAMINADOS"
@@ -1487,10 +1492,6 @@ def form_consumos() -> None:
         st.number_input("ENERGIA (R$)", min_value=0.0, step=0.01, format="%.2f", key="con_energia_valor")
 
     st.markdown("**Resíduos e demais** — só medição")
-    st.caption(
-        "O valor pago destes não entra aqui: ele já é lançado em Custos e "
-        "Orçamentos (saída) e em Recicláveis (entrada)."
-    )
     c1, c2, c3 = st.columns(3)
     with c1:
         st.number_input("SÓLIDOS CONTAMINADOS (kg)", min_value=0.0, step=0.01, format="%.2f", key="con_solidos")
@@ -2629,8 +2630,125 @@ def painel_evidencia(id_registro, versao) -> None:
         )
 
 
+# ------------------------------------------------
+# PGRS — Plano de Gerenciamento de Resíduos Sólidos
+# ------------------------------------------------
+# Documento anual por filial: uma linha por resíduo, com os atributos do
+# resíduo (código IBAMA, classe, acondicionamento, destinação...) e a média
+# anual. Dos 14 campos, 13 não mudam de um ano para o outro — só a média.
+PAGINAS_CONSUMOS = {
+    "lancamento": "Consumos e Serviços",
+    "pgrs": "PGRS — Resíduos",
+}
+
+# Até 2019 é o alcance da base de consumo; o ano que vem entra porque o
+# PGRS costuma ser montado antes do ano fechar.
+def anos_pgrs() -> list:
+    atual = date.today().year
+    return list(range(atual + 1, 2018, -1))
+
+
+def barra_paginas_consumos() -> str:
+    """Navegação da tela de Consumos, na lateral esquerda."""
+    st.session_state.setdefault("con_pagina", "lancamento")
+
+    with st.sidebar:
+        st.markdown('<p class="dv-sidebar-titulo">Páginas</p>', unsafe_allow_html=True)
+        for chave, nome in PAGINAS_CONSUMOS.items():
+            ativa = st.session_state["con_pagina"] == chave
+            st.button(
+                nome,
+                key=f"con_pg_{chave}",
+                use_container_width=True,
+                type="primary" if ativa else "secondary",
+                on_click=lambda c=chave: st.session_state.__setitem__("con_pagina", c),
+            )
+
+    return st.session_state["con_pagina"]
+
+
+def filtros_pgrs():
+    """Filial e ano do documento. Devolve (filial, ano)."""
+    esq, dir_, _ = st.columns([2, 1, 2])
+    with esq:
+        entrada_filial("pgrs_filial")
+    with dir_:
+        anos = anos_pgrs()
+        # o ano seguinte existe na lista (o PGRS é montado antes do ano
+        # fechar) mas não pode nascer escolhido: o padrão é o ano corrente
+        st.selectbox("ANO", anos, index=anos.index(date.today().year), key="pgrs_ano")
+    return txt("pgrs_filial"), st.session_state.get("pgrs_ano", date.today().year)
+
+
+def pagina_pgrs() -> None:
+    st.markdown("### PGRS — Plano de Gerenciamento de Resíduos Sólidos")
+    st.caption(
+        "Cadastro anual por filial. Cada linha é um resíduo: código IBAMA, "
+        "classe, acondicionamento, destinação e a média anual."
+    )
+
+    filial, ano = filtros_pgrs()
+    if not filial:
+        st.info("Escolha a filial para ver o PGRS.")
+        return
+
+    # O recorte é pelo COD_FILIAL da filial escolhida, não pelo nome: o
+    # nome tem 98 grafias nas bases antigas, e comparar texto exato é o
+    # defeito que o código veio resolver. O filtro de permissão continua
+    # valendo por cima — um usuário de filial não alcança outra nem
+    # escolhendo, porque a lista dele só tem as dele.
+    codigo = codigo_da_filial(filial)
+    if not codigo:
+        st.warning(
+            f"**{filial}** não tem {COL_COD_FILIAL} no cadastro de usuários — "
+            "sem o código não há como recortar o documento."
+        )
+        return
+
+    st.divider()
+    try:
+        cliente = conectar_supabase()
+        consulta = (
+            cliente.table(TABELA_PGRS)
+            .select("*")
+            .eq("ANO", int(ano))
+            .eq(COL_COD_FILIAL, codigo)
+        )
+        if not PERFIL["admin"]:
+            consulta = consulta.in_(COL_COD_FILIAL, PERFIL["codigos"])
+        linhas = consulta.limit(LIMITE_REGISTROS).execute().data or []
+    except Exception as erro:
+        # A tabela ainda está sendo montada no Supabase: a tela avisa o que
+        # falta em vez de estourar um traceback de PostgREST na cara.
+        st.warning(
+            f"A tabela **{TABELA_PGRS}** ainda não respondeu. Enquanto ela "
+            "não existir, esta página fica só com os filtros."
+        )
+        st.caption(f"Detalhe técnico: {erro}")
+        return
+
+    df = pd.DataFrame(linhas)
+    if df.empty:
+        st.info(f"Nenhum resíduo cadastrado em {filial} para {ano}.")
+        return
+
+    st.dataframe(limpa_ordem_pgrs(df), hide_index=True, use_container_width=True)
+    st.caption(f"{len(df)} resíduo(s) em {filial} · {ano}.")
+
+
+def limpa_ordem_pgrs(df: pd.DataFrame) -> pd.DataFrame:
+    """id e as colunas de controle saem; o resto mantém a ordem da tabela."""
+    fora = ("id", COL_COD_FILIAL, "DATA_CRIACAO", "USUARIO")
+    return df[[c for c in df.columns if c not in fora]]
+
+
 def tela_consumos() -> None:
     cabecalho_tela("consumos")
+
+    if barra_paginas_consumos() == "pgrs":
+        pagina_pgrs()
+        return
+
     aba_novo, aba_editar = st.tabs(["➕ Novo lançamento", "✏️ Editar / Excluir"])
     with aba_novo:
         form_consumos()
