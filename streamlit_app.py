@@ -3017,21 +3017,25 @@ CABECALHO_CONHECIDO = {
 # Ordem e largura das colunas no PDF. As larguras somam 1 e são
 # proporcionais à largura útil da página: coluna estreita para CLASSE,
 # larga para RESÍDUO e TRANSPORTE INTERNO, que têm texto comprido.
+# (coluna, rótulo, peso). Os rótulos não levam mais hífen manual: quebrar
+# "ACONDICIO-NAMENTO" no meio da palavra era sintoma de coluna estreita,
+# não solução. O peso distribui o espaço que sobra depois de garantir a
+# largura mínima de cada cabeçalho — ver larguras_pdf().
 COLUNAS_PDF = [
-    ("ITEM", "ITEM", 0.03),
-    (COL_IBAMA, "CÓDIGO IBAMA", 0.07),
-    ("RESIDUO", "RESÍDUO", 0.13),
-    ("CLASSE", "CLASSE", 0.04),
-    (COL_UNIDADE, "UNIDADE", 0.05),
-    (COL_MEDIA, "MÉDIA ANUAL", 0.07),
+    ("ITEM", "ITEM", 0.02),
+    (COL_IBAMA, "CÓDIGO IBAMA", 0.06),
+    ("RESIDUO", "RESÍDUO", 0.16),
+    ("CLASSE", "CLASSE", 0.03),
+    (COL_UNIDADE, "UNIDADE", 0.04),
+    (COL_MEDIA, "MÉDIA ANUAL", 0.06),
     (COL_LOCAL, "LOCAL GERADO", 0.07),
-    ("ACONDICIONAMENTO", "ACONDICIO-<br/>NAMENTO", 0.08),
-    (COL_TRANSPORTE, "TRANSPORTE<br/>INTERNO", 0.09),
-    ("RESPONSAVEL", "RESPON-<br/>SÁVEL", 0.07),
-    ("ARMAZENAMENTO", "ARMAZE-<br/>NAGEM", 0.08),
+    ("ACONDICIONAMENTO", "ACONDICIONAMENTO", 0.08),
+    (COL_TRANSPORTE, "TRANSPORTE INTERNO", 0.10),
+    ("RESPONSAVEL", "RESPONSÁVEL", 0.07),
+    ("ARMAZENAMENTO", "ARMAZENAMENTO", 0.08),
     ("COLETA", "COLETA", 0.07),
     ("DESTINACAO", "DESTINAÇÃO", 0.08),
-    ("FREQUENCIA", "FREQUÊNCIA", 0.07),
+    ("FREQUENCIA", "FREQUÊNCIA", 0.08),
 ]
 
 try:
@@ -3039,6 +3043,7 @@ try:
     from reportlab.lib.pagesizes import A4, landscape
     from reportlab.lib.styles import ParagraphStyle
     from reportlab.lib.units import mm
+    from reportlab.pdfbase.pdfmetrics import stringWidth
     from reportlab.platypus import (
         Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle,
     )
@@ -3132,6 +3137,42 @@ def padroes_cabecalho(codigo: str) -> dict:
     return padrao
 
 
+def larguras_pdf(util: float, tamanho_cabecalho: float, folga: float = 7.0):
+    """Largura de cada coluna, garantindo que nenhum cabeçalho quebre palavra.
+
+    O mínimo de cada coluna é a largura da MAIOR PALAVRA do seu rótulo:
+    "ACONDICIONAMENTO" é uma palavra só e não tem onde quebrar, então a
+    coluna precisa cabê-la inteira. "TRANSPORTE INTERNO" são duas e pode
+    quebrar entre elas — o mínimo é só o da maior.
+
+    O que sobra depois dos mínimos é distribuído pelos pesos, que refletem
+    o comprimento do CONTEÚDO (RESÍDUO é o texto mais longo da tabela).
+
+    Devolve (larguras, tamanho usado). Se os mínimos não couberem na
+    página, a fonte do cabeçalho diminui até caber — o contrário de
+    espremer a coluna e hifenizar no meio da palavra.
+    """
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+
+    while tamanho_cabecalho >= 4.5:
+        minimos = [
+            max(stringWidth(palavra, "Helvetica-Bold", tamanho_cabecalho)
+                for palavra in rotulo.split()) + folga
+            for _, rotulo, _ in COLUNAS_PDF
+        ]
+        sobra = util - sum(minimos)
+        if sobra >= 0:
+            total = sum(peso for _, _, peso in COLUNAS_PDF)
+            return [
+                minimo + sobra * peso / total
+                for minimo, (_, _, peso) in zip(minimos, COLUNAS_PDF)
+            ], tamanho_cabecalho
+        tamanho_cabecalho -= 0.25
+
+    total = sum(peso for _, _, peso in COLUNAS_PDF)
+    return [util * peso / total for _, _, peso in COLUNAS_PDF], 4.5
+
+
 def cabecalho_pgrs(codigo: str) -> dict:
     """Valores do cabeçalho: o que foi digitado, ou o que o cadastro deu."""
     padrao = padroes_cabecalho(codigo)
@@ -3214,9 +3255,14 @@ def pdf_pgrs(filial: str, codigo: str, ano: int, df: pd.DataFrame):
                                 textColor=_cores_pdf.HexColor("#3C4B42"))
         valor = ParagraphStyle("v", fontName="Helvetica", fontSize=7.5, leading=9)
         celula = ParagraphStyle("c", fontName="Helvetica", fontSize=6.5, leading=8)
-        cabeca = ParagraphStyle("h", fontName="Helvetica-Bold", fontSize=6.5,
-                                leading=8, alignment=1,
-                                textColor=_cores_pdf.white)
+        larguras, tamanho_cabeca = larguras_pdf(util, 6.5)
+        cabeca = ParagraphStyle("h", fontName="Helvetica-Bold",
+                                fontSize=tamanho_cabeca,
+                                leading=tamanho_cabeca + 1.5, alignment=1,
+                                textColor=_cores_pdf.white,
+                                splitLongWords=0)
+        numero = ParagraphStyle("n", fontName="Helvetica", fontSize=6.5,
+                                leading=8, alignment=2)
 
         dados = cabecalho_pgrs(codigo)
         blocos = [
@@ -3262,14 +3308,15 @@ def pdf_pgrs(filial: str, codigo: str, ano: int, df: pd.DataFrame):
                     # no documento original ela já tinha saído de ordem
                     bruto = str(posicao)
                 elif coluna == COL_MEDIA:
-                    numero = para_float(linha.get(coluna), None)
-                    bruto = fmt_num(numero) if numero is not None else "—"
+                    media = para_float(linha.get(coluna), None)
+                    bruto = fmt_num(media) if media is not None else "—"
                 else:
                     bruto = texto_celula(linha.get(coluna))
-                visual.append(Paragraph(bruto or "&nbsp;", celula))
+                # número alinhado à direita: é o que torna a coluna legível
+                estilo = numero if coluna == COL_MEDIA else celula
+                visual.append(Paragraph(bruto or "&nbsp;", estilo))
             corpo.append(visual)
 
-        larguras = [util * peso for _, _, peso in COLUNAS_PDF]
         tabela = Table(corpo, colWidths=larguras, repeatRows=1)
         tabela.setStyle(TableStyle([
             ("GRID", (0, 0), (-1, -1), 0.5, _cores_pdf.HexColor("#9AA8A0")),
