@@ -287,8 +287,7 @@ TABELAS_DB = {
 # RECICLAVEIS (MATERIAL, PESO, VALOR_KG) ficariam nulas em toda linha.
 COL_DATA_RETIRADA = "DATA_RETIRADA"
 COL_BENEFICIARIO = "BENEFICIARIO"
-# atenção: o nome no banco tem acento, então precisa casar exatamente
-COL_AUTORIZACAO = "USUARIO_AUTORIZAÇÃO"
+COL_AUTORIZACAO = "USUARIO_AUTORIZACAO"
 
 # Controle de Licenças e Controles Ambientais são duas telas, mas uma tabela
 # só: a coluna CATEGORIA é que separa. Cada tela grava a sua categoria e só
