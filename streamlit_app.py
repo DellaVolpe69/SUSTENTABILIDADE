@@ -2027,6 +2027,14 @@ OPCOES_SETOR = ["Sustentabilidade", "Qualidade"]
 # booleano tipo E_DIRETORIA.
 OPCOES_BENEFICIARIO = ["Diretoria", "Filial"]
 
+# A receita dos recicláveis é dividida meio a meio: metade fica para a
+# Diretoria, metade volta como benefício para as filiais. Cada lado tem o
+# seu saldo, e é por isso que a retirada precisa dizer quem retirou.
+#
+# Num número só para o dia em que a divisão mudar — 60/40 seria 0.6 aqui,
+# e a cota do outro lado sai por diferença, sem risco de somar 110%.
+RATEIO_DIRETORIA = 0.5
+
 
 def salvar_custo() -> None:
     if not txt("cus_fornecedor"):
@@ -2951,7 +2959,7 @@ CAMPOS_EDICAO["descontos"] = [
     campo(COL_DATA_RETIRADA, "data", "DATA DA RETIRADA"),
     campo("VALOR", "decimal", "VALOR (R$)"),
     campo(COL_BENEFICIARIO, "opcoes", "BENEFICIÁRIO", opcoes=OPCOES_BENEFICIARIO),
-    campo("SETOR", "opcoes", opcoes=OPCOES_SETOR),
+    campo("SETOR", "texto"),
     campo(COL_AUTORIZACAO, "texto", "AUTORIZADO POR"),
 ]
 
@@ -3767,16 +3775,20 @@ def emails_cadastrados() -> list:
 
 @st.cache_data(ttl=60, show_spinner=False)
 def saldo_reciclaveis():
-    """(receita, retirado, saldo) do montante INTEIRO. None se não der para ler.
+    """Receita, cotas e saldo de cada beneficiário. None se não der para ler.
 
-    O dinheiro dos recicláveis é um caixa único da empresa: a retirada sai
-    do montante de todas as filiais, não do que aquela filial arrecadou.
-    Por isso a conta aqui é global.
+    O dinheiro dos recicláveis é um caixa único da empresa — a retirada sai
+    do montante de todas as filiais, não do que aquela filial arrecadou — e
+    esse caixa é dividido meio a meio entre Diretoria e Filial. Cada lado
+    gasta da sua metade, então cada um tem o seu saldo.
 
     Consequência importante: esta é a ÚNICA leitura do app que NÃO aplica o
     filtro por COD_FILIAL do perfil. É de propósito — filtrar daria o saldo
     da filial, que é um número que não existe nesse modelo. Quem mexer aqui
     depois, não "conserte" isso.
+
+    Retirada com beneficiário fora da lista entra em "outros" em vez de ser
+    ignorada: dinheiro que sai da base não pode desaparecer da conta.
     """
     try:
         cliente = conectar_supabase()
@@ -3785,15 +3797,41 @@ def saldo_reciclaveis():
             .limit(LIMITE_SALDO).execute()
         )
         saida = (
-            cliente.table(TABELAS_DB["descontos"]).select("VALOR")
+            cliente.table(TABELAS_DB["descontos"])
+            .select(f'"VALOR","{COL_BENEFICIARIO}"')
             .limit(LIMITE_SALDO).execute()
         )
     except Exception:
         return None
 
     receita = sum(para_float(l.get("TOTAL"), 0.0) or 0.0 for l in entrada.data or [])
-    retirado = sum(para_float(l.get("VALOR"), 0.0) or 0.0 for l in saida.data or [])
-    return receita, retirado, receita - retirado
+    cotas = {
+        "Diretoria": receita * RATEIO_DIRETORIA,
+        "Filial": receita * (1 - RATEIO_DIRETORIA),
+    }
+
+    retirado = {nome: 0.0 for nome in OPCOES_BENEFICIARIO}
+    retirado["outros"] = 0.0
+    por_chave = {chave_nome(nome): nome for nome in OPCOES_BENEFICIARIO}
+    for linha in saida.data or []:
+        valor = para_float(linha.get("VALOR"), 0.0) or 0.0
+        nome = por_chave.get(chave_nome(linha.get(COL_BENEFICIARIO)), "outros")
+        retirado[nome] += valor
+
+    return {
+        "receita": receita,
+        "cotas": cotas,
+        "retirado": retirado,
+        "saldo": {nome: cotas[nome] - retirado[nome] for nome in cotas},
+    }
+
+
+def saldo_do_beneficiario(nome: str):
+    """Saldo de um lado só, para mostrar ao pé do campo. None se não der."""
+    numeros = saldo_reciclaveis()
+    if numeros is None:
+        return None
+    return numeros["saldo"].get(nome)
 
 
 def salvar_desconto() -> None:
@@ -3819,7 +3857,7 @@ def salvar_desconto() -> None:
         COL_BENEFICIARIO: st.session_state.get(
             "des_beneficiario", OPCOES_BENEFICIARIO[0]
         ),
-        "SETOR": st.session_state.get("des_setor", OPCOES_SETOR[0]),
+        "SETOR": txt("des_setor"),
         COL_AUTORIZACAO: autorizacao,
         "USUARIO": usuario_email_logado,
     }
@@ -3830,12 +3868,19 @@ def form_desconto() -> None:
     c1, c2, c3 = st.columns(3)
     with c1:
         entrada_filial("des_filial")
-        st.selectbox("BENEFICIÁRIO", OPCOES_BENEFICIARIO, key="des_beneficiario",
-                     help="Quem ficou com o valor")
+        beneficiario = st.selectbox(
+            "BENEFICIÁRIO", OPCOES_BENEFICIARIO, key="des_beneficiario",
+            help="De qual das duas cotas o valor sai",
+        )
+        # o saldo do lado escolhido, ao pé do campo: é o número que decide
+        # se essa retirada cabe
+        disponivel = saldo_do_beneficiario(beneficiario)
+        if disponivel is not None:
+            st.caption(f"Saldo de {beneficiario}: **{fmt_brl(disponivel)}**")
     with c2:
         st.date_input("DATA DA RETIRADA", value=date.today(),
                       format="DD/MM/YYYY", key="des_data")
-        st.selectbox("SETOR", OPCOES_SETOR, key="des_setor")
+        st.text_input("SETOR", key="des_setor")
     with c3:
         st.number_input("VALOR (R$)", min_value=0.0, step=0.01, format="%.2f",
                         key="des_valor")
@@ -3883,18 +3928,32 @@ def pagina_retirada() -> None:
     # anteriores fora desta base, e quem decide é quem autoriza.
     numeros = saldo_reciclaveis()
     if numeros is not None:
-        receita, retirado, saldo = numeros
-        linha_cartoes([
-            ("Receita dos recicláveis", fmt_brl(receita), "verde",
-             "todas as filiais"),
-            ("Já retirado", fmt_brl(retirado), "laranja", "todas as retiradas"),
-            ("Saldo disponível", fmt_brl(saldo),
-             "verde" if saldo >= 0 else "vermelho", "receita menos retiradas"),
-        ])
+        cartoes = [(
+            "Receita dos recicláveis", fmt_brl(numeros["receita"]), "verde",
+            f"todas as filiais · {RATEIO_DIRETORIA:.0%} para cada lado",
+        )]
+        for nome in OPCOES_BENEFICIARIO:
+            saldo = numeros["saldo"][nome]
+            cartoes.append((
+                f"Saldo {nome}", fmt_brl(saldo),
+                "verde" if saldo >= 0 else "vermelho",
+                f"cota {fmt_brl(numeros['cotas'][nome])} − retirado "
+                f"{fmt_brl(numeros['retirado'][nome])}",
+            ))
+        linha_cartoes(cartoes)
+
+        if numeros["retirado"]["outros"]:
+            st.warning(
+                f"{fmt_brl(numeros['retirado']['outros'])} em retiradas sem "
+                "beneficiário reconhecido — não entram em nenhuma das duas "
+                "cotas. Corrija o BENEFICIÁRIO desses lançamentos na aba de "
+                "edição."
+            )
+
         st.caption(
-            "O montante é único da empresa: a retirada sai do total de todas "
-            "as filiais, não do que a filial escolhida abaixo arrecadou. A "
-            "FILIAL do lançamento diz a quem a retirada se refere."
+            "O montante é único da empresa e dividido meio a meio: cada lado "
+            "gasta da sua metade. A FILIAL do lançamento diz a quem a "
+            "retirada se refere, não de onde o dinheiro sai."
         )
         st.divider()
 
