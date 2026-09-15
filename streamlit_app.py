@@ -279,7 +279,16 @@ TABELAS_DB = {
     "custos": "SUSTENTABILIDADE_CUSTO",
     "reciclaveis": "SUSTENTABILIDADE_RECICLAVEIS",
     "pgrs": "SUSTENTABILIDADE_PRGS",
+    "descontos": "SUSTENTABILIDADE_DESCONTO_RECICLAGEM",
 }
+
+# Retirada do valor que os recicláveis renderam. Tabela própria porque o
+# grão é outro: uma retirada não tem material nem peso, e as colunas de
+# RECICLAVEIS (MATERIAL, PESO, VALOR_KG) ficariam nulas em toda linha.
+COL_DATA_RETIRADA = "DATA_RETIRADA"
+COL_BENEFICIARIO = "BENEFICIARIO"
+# atenção: o nome no banco tem acento, então precisa casar exatamente
+COL_AUTORIZACAO = "USUARIO_AUTORIZAÇÃO"
 
 # Controle de Licenças e Controles Ambientais são duas telas, mas uma tabela
 # só: a coluna CATEGORIA é que separa. Cada tela grava a sua categoria e só
@@ -328,6 +337,11 @@ COL_ENERGIA_VALOR = "ENERGIA_VALOR"
 # Quantos registros as telas carregam. 1000 é o teto padrão do PostgREST
 # no Supabase (db-max-rows): pedir mais não traz mais.
 LIMITE_REGISTROS = 1000
+
+# O saldo dos recicláveis soma a base inteira, não uma página dela: com
+# LIMITE_REGISTROS o total pararia de crescer ao passar de mil lançamentos,
+# e ninguém notaria — o número continuaria plausível.
+LIMITE_SALDO = 100000
 
 
 @st.cache_resource(show_spinner=False)
@@ -2007,6 +2021,12 @@ CAMPOS_CUSTO = (
 
 OPCOES_SETOR = ["Sustentabilidade", "Qualidade"]
 
+# Quem ficou com o valor retirado dos recicláveis. Lista fechada de duas
+# opções; se entrar um terceiro destino (fundo, doação), ela cresce sem
+# mexer no nome da coluna — que é a vantagem de BENEFICIARIO sobre um
+# booleano tipo E_DIRETORIA.
+OPCOES_BENEFICIARIO = ["Diretoria", "Filial"]
+
 
 def salvar_custo() -> None:
     if not txt("cus_fornecedor"):
@@ -2534,6 +2554,7 @@ FILTROS_EDICAO = {
     "custos": ("FILIAL", "FORNECEDOR"),
     "reciclaveis": ("FILIAL", "MATERIAL"),
     "pgrs": ("FILIAL", "RESIDUO"),
+    "descontos": ("FILIAL", "BENEFICIARIO"),
 }
 TODAS = "(todas)"
 
@@ -2924,6 +2945,17 @@ CAMPOS_EDICAO["pgrs"] = [
 ]
 
 RESUMO_REGISTRO["pgrs"] = ("FILIAL", "ANO", "RESIDUO")
+
+CAMPOS_EDICAO["descontos"] = [
+    campo("FILIAL", "filial"),
+    campo(COL_DATA_RETIRADA, "data", "DATA DA RETIRADA"),
+    campo("VALOR", "decimal", "VALOR (R$)"),
+    campo(COL_BENEFICIARIO, "opcoes", "BENEFICIÁRIO", opcoes=OPCOES_BENEFICIARIO),
+    campo("SETOR", "opcoes", opcoes=OPCOES_SETOR),
+    campo(COL_AUTORIZACAO, "texto", "AUTORIZADO POR"),
+]
+
+RESUMO_REGISTRO["descontos"] = ("FILIAL", COL_DATA_RETIRADA, "VALOR")
 
 
 # Colunas cujo valor se repete mas não cabe em lista fixa: coleta e
@@ -3388,23 +3420,40 @@ def pdf_pgrs(filial: str, codigo: str, ano: int, df: pd.DataFrame):
         return None, str(erro)
 
 
-def barra_paginas_consumos() -> str:
-    """Navegação da tela de Consumos, na lateral esquerda."""
-    st.session_state.setdefault("con_pagina", "lancamento")
+def barra_paginas_lateral(estado: str, paginas: dict, prefixo: str) -> str:
+    """Navegação por páginas na lateral esquerda. Devolve a página ativa.
+
+    Terceira tela a usar este padrão (Indicador, Consumos, Recicláveis), e
+    por isso deixou de ser código repetido. `estado` é a chave no
+    session_state e `prefixo` isola as keys dos botões — duas barras com a
+    mesma key na mesma sessão dariam StreamlitDuplicateElementKey.
+
+    A página ativa é marcada com type="primary" — o mesmo verde cheio dos
+    botões de gravar. É o único jeito de destacar um botão específico sem
+    depender da classe st-key-*, que só existe em versões recentes.
+    """
+    primeira = next(iter(paginas))
+    st.session_state.setdefault(estado, primeira)
+    if st.session_state[estado] not in paginas:
+        st.session_state[estado] = primeira
 
     with st.sidebar:
         st.markdown('<p class="dv-sidebar-titulo">Páginas</p>', unsafe_allow_html=True)
-        for chave, nome in PAGINAS_CONSUMOS.items():
-            ativa = st.session_state["con_pagina"] == chave
+        for chave, nome in paginas.items():
+            ativa = st.session_state[estado] == chave
             st.button(
                 nome,
-                key=f"con_pg_{chave}",
+                key=f"{prefixo}_pg_{chave}",
                 use_container_width=True,
                 type="primary" if ativa else "secondary",
-                on_click=lambda c=chave: st.session_state.__setitem__("con_pagina", c),
+                on_click=lambda c=chave: st.session_state.__setitem__(estado, c),
             )
 
-    return st.session_state["con_pagina"]
+    return st.session_state[estado]
+
+
+def barra_paginas_consumos() -> str:
+    return barra_paginas_lateral("con_pagina", PAGINAS_CONSUMOS, "con")
 
 
 def filtros_pgrs():
@@ -3696,13 +3745,164 @@ def tela_custos() -> None:
         painel_edicao("custos")
 
 
+CAMPOS_DESCONTO = (
+    "des_filial", "des_data", "des_valor", "des_beneficiario",
+    "des_setor", "des_autorizacao", "des_autorizacao_novo",
+)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def emails_cadastrados() -> list:
+    """E-mails do cadastro, para a autorização apontar para alguém real."""
+    try:
+        df = carregar_usuarios()
+    except Exception:
+        return []
+    coluna = acha_coluna(df.columns, NOMES_EMAIL) if not df.empty else None
+    if coluna is None:
+        return []
+    vistos = {str(v).strip().lower() for v in df[coluna].dropna() if str(v).strip()}
+    return sorted(vistos)
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def saldo_reciclaveis():
+    """(receita, retirado, saldo) do montante INTEIRO. None se não der para ler.
+
+    O dinheiro dos recicláveis é um caixa único da empresa: a retirada sai
+    do montante de todas as filiais, não do que aquela filial arrecadou.
+    Por isso a conta aqui é global.
+
+    Consequência importante: esta é a ÚNICA leitura do app que NÃO aplica o
+    filtro por COD_FILIAL do perfil. É de propósito — filtrar daria o saldo
+    da filial, que é um número que não existe nesse modelo. Quem mexer aqui
+    depois, não "conserte" isso.
+    """
+    try:
+        cliente = conectar_supabase()
+        entrada = (
+            cliente.table(TABELAS_DB["reciclaveis"]).select("TOTAL")
+            .limit(LIMITE_SALDO).execute()
+        )
+        saida = (
+            cliente.table(TABELAS_DB["descontos"]).select("VALOR")
+            .limit(LIMITE_SALDO).execute()
+        )
+    except Exception:
+        return None
+
+    receita = sum(para_float(l.get("TOTAL"), 0.0) or 0.0 for l in entrada.data or [])
+    retirado = sum(para_float(l.get("VALOR"), 0.0) or 0.0 for l in saida.data or [])
+    return receita, retirado, receita - retirado
+
+
+def salvar_desconto() -> None:
+    faltando = []
+    if not txt("des_filial"):
+        faltando.append("FILIAL")
+    if not float(st.session_state.get("des_valor", 0.0) or 0.0):
+        faltando.append("VALOR")
+    if faltando:
+        st.session_state["msg_descontos"] = (
+            "warning", "Obrigatório: " + ", ".join(faltando)
+        )
+        return
+
+    autorizacao = txt("des_autorizacao")
+    if autorizacao == CONTROLE_OUTRO:
+        autorizacao = txt("des_autorizacao_novo")
+
+    dados = {
+        "FILIAL": txt("des_filial").upper(),
+        COL_DATA_RETIRADA: st.session_state.get("des_data", date.today()),
+        "VALOR": st.session_state.get("des_valor", 0.0),
+        COL_BENEFICIARIO: st.session_state.get(
+            "des_beneficiario", OPCOES_BENEFICIARIO[0]
+        ),
+        "SETOR": st.session_state.get("des_setor", OPCOES_SETOR[0]),
+        COL_AUTORIZACAO: autorizacao,
+        "USUARIO": usuario_email_logado,
+    }
+    concluir("msg_descontos", "descontos", dados, CAMPOS_DESCONTO)
+
+
+def form_desconto() -> None:
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        entrada_filial("des_filial")
+        st.selectbox("BENEFICIÁRIO", OPCOES_BENEFICIARIO, key="des_beneficiario",
+                     help="Quem ficou com o valor")
+    with c2:
+        st.date_input("DATA DA RETIRADA", value=date.today(),
+                      format="DD/MM/YYYY", key="des_data")
+        st.selectbox("SETOR", OPCOES_SETOR, key="des_setor")
+    with c3:
+        st.number_input("VALOR (R$)", min_value=0.0, step=0.01, format="%.2f",
+                        key="des_valor")
+        opcoes = emails_cadastrados()
+        if opcoes:
+            escolha = st.selectbox("AUTORIZADO POR", opcoes + [CONTROLE_OUTRO],
+                                   key="des_autorizacao")
+            if escolha == CONTROLE_OUTRO:
+                st.text_input("Quem autorizou?", key="des_autorizacao_novo",
+                              placeholder="nome ou e-mail")
+        else:
+            st.text_input("AUTORIZADO POR", key="des_autorizacao")
+
+    st.button("💾 Salvar retirada", key="btn_salvar_des", type="primary",
+              on_click=salvar_desconto)
+    render_msg("msg_descontos")
+
+
+PAGINAS_RECICLAVEIS = {
+    "material": "Adicionar Material",
+    "retirada": "Retirar Valor",
+}
+
+
 def tela_reciclaveis() -> None:
     cabecalho_tela("reciclaveis")
+
+    if barra_paginas_lateral("rec_pagina", PAGINAS_RECICLAVEIS, "rec") == "retirada":
+        pagina_retirada()
+        return
+
     aba_novo, aba_editar = st.tabs(["➕ Novo lançamento", "✏️ Editar / Excluir"])
     with aba_novo:
         form_reciclaveis()
     with aba_editar:
         painel_edicao("reciclaveis")
+
+
+def pagina_retirada() -> None:
+    """Retirada do valor que os recicláveis renderam."""
+    st.markdown("### Retirar Valor")
+
+    # O saldo é o contexto da decisão: quem vai retirar precisa saber quanto
+    # existe. Mostrado, não travado — pode haver saldo de exercícios
+    # anteriores fora desta base, e quem decide é quem autoriza.
+    numeros = saldo_reciclaveis()
+    if numeros is not None:
+        receita, retirado, saldo = numeros
+        linha_cartoes([
+            ("Receita dos recicláveis", fmt_brl(receita), "verde",
+             "todas as filiais"),
+            ("Já retirado", fmt_brl(retirado), "laranja", "todas as retiradas"),
+            ("Saldo disponível", fmt_brl(saldo),
+             "verde" if saldo >= 0 else "vermelho", "receita menos retiradas"),
+        ])
+        st.caption(
+            "O montante é único da empresa: a retirada sai do total de todas "
+            "as filiais, não do que a filial escolhida abaixo arrecadou. A "
+            "FILIAL do lançamento diz a quem a retirada se refere."
+        )
+        st.divider()
+
+    aba_nova, aba_editar = st.tabs(["➕ Nova retirada", "✏️ Editar / Excluir"])
+    with aba_nova:
+        form_desconto()
+    with aba_editar:
+        painel_edicao("descontos")
 
 
 # ================================================
@@ -3927,28 +4127,16 @@ def filtros_relatorio(pagina: str, df: pd.DataFrame) -> pd.DataFrame:
 
 
 def barra_paginas() -> str:
-    """Navegação da tela de indicadores, na lateral esquerda."""
-    st.session_state.setdefault("ind_pagina", "consumos")
-
+    """Navegação da tela de indicadores, com o escopo de acesso no pé."""
+    pagina = barra_paginas_lateral("ind_pagina", PAGINAS_INDICADOR, "ind")
     with st.sidebar:
-        st.markdown('<p class="dv-sidebar-titulo">Páginas</p>', unsafe_allow_html=True)
-        for chave, nome in PAGINAS_INDICADOR.items():
-            ativa = st.session_state["ind_pagina"] == chave
-            st.button(
-                nome,
-                key=f"ind_pg_{chave}",
-                use_container_width=True,
-                type="primary" if ativa else "secondary",
-                on_click=lambda c=chave: st.session_state.__setitem__("ind_pagina", c),
-            )
         st.divider()
         st.caption(
             "Acesso: todas as filiais"
             if PERFIL["admin"]
             else "Filiais: " + ", ".join(PERFIL["filiais"])
         )
-
-    return st.session_state["ind_pagina"]
+    return pagina
 
 
 # ------------------------------------------------
