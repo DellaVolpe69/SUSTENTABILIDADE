@@ -3834,6 +3834,61 @@ def saldo_reciclaveis():
     }
 
 
+def cartoes_do_caixa(fora_do_filtro: bool = False) -> bool:
+    """Receita do caixa e saldo de cada beneficiário, em cartões.
+
+    Vive fora das duas telas que a usam (a retirada e o indicador) porque o
+    número é o mesmo nas duas: um cálculo em dois lugares vira dois números
+    diferentes no dia em que alguém mexer num só.
+
+    `fora_do_filtro` acrescenta o aviso de que estes cartões ignoram os
+    filtros da tela. No indicador isso é essencial: a "Receita total" ali em
+    cima obedece ao filtro de filial, esta aqui não — e ver dois valores de
+    receita na mesma tela, sem explicação, parece defeito.
+
+    Devolve False quando não deu para ler o caixa, para quem chamou decidir
+    se desenha um divisor.
+    """
+    numeros = saldo_reciclaveis()
+    if numeros is None:
+        return False
+
+    cartoes = [(
+        "Receita dos recicláveis", fmt_brl(numeros["receita"]), "verde",
+        f"todas as filiais · {RATEIO_DIRETORIA:.0%} para cada lado",
+    )]
+    for nome in OPCOES_BENEFICIARIO:
+        saldo = numeros["saldo"][nome]
+        cartoes.append((
+            f"Saldo {nome}", fmt_brl(saldo),
+            "verde" if saldo >= 0 else "vermelho",
+            f"cota {fmt_brl(numeros['cotas'][nome])} − retirado "
+            f"{fmt_brl(numeros['retirado'][nome])}",
+        ))
+    linha_cartoes(cartoes)
+
+    if numeros["retirado"]["outros"]:
+        st.warning(
+            f"{fmt_brl(numeros['retirado']['outros'])} em retiradas sem "
+            "beneficiário reconhecido — não entram em nenhuma das duas "
+            "cotas. Corrija o BENEFICIÁRIO desses lançamentos na aba de "
+            "edição."
+        )
+
+    recado = (
+        "O montante é único da empresa e dividido meio a meio: cada lado "
+        "gasta da sua metade. A FILIAL do lançamento diz a quem a retirada "
+        "se refere, não de onde o dinheiro sai."
+    )
+    if fora_do_filtro:
+        recado += (
+            " Estes três cartões são da empresa toda e **ignoram os filtros "
+            "acima**: não existe saldo por filial neste modelo."
+        )
+    st.caption(recado)
+    return True
+
+
 def esquece_saldo(tabela_app: str = "") -> None:
     """Descarta o saldo em cache. Chamar depois de mexer no caixa.
 
@@ -3955,35 +4010,7 @@ def pagina_retirada() -> None:
     # O saldo é o contexto da decisão: quem vai retirar precisa saber quanto
     # existe. Mostrado, não travado — pode haver saldo de exercícios
     # anteriores fora desta base, e quem decide é quem autoriza.
-    numeros = saldo_reciclaveis()
-    if numeros is not None:
-        cartoes = [(
-            "Receita dos recicláveis", fmt_brl(numeros["receita"]), "verde",
-            f"todas as filiais · {RATEIO_DIRETORIA:.0%} para cada lado",
-        )]
-        for nome in OPCOES_BENEFICIARIO:
-            saldo = numeros["saldo"][nome]
-            cartoes.append((
-                f"Saldo {nome}", fmt_brl(saldo),
-                "verde" if saldo >= 0 else "vermelho",
-                f"cota {fmt_brl(numeros['cotas'][nome])} − retirado "
-                f"{fmt_brl(numeros['retirado'][nome])}",
-            ))
-        linha_cartoes(cartoes)
-
-        if numeros["retirado"]["outros"]:
-            st.warning(
-                f"{fmt_brl(numeros['retirado']['outros'])} em retiradas sem "
-                "beneficiário reconhecido — não entram em nenhuma das duas "
-                "cotas. Corrija o BENEFICIÁRIO desses lançamentos na aba de "
-                "edição."
-            )
-
-        st.caption(
-            "O montante é único da empresa e dividido meio a meio: cada lado "
-            "gasta da sua metade. A FILIAL do lançamento diz a quem a "
-            "retirada se refere, não de onde o dinheiro sai."
-        )
+    if cartoes_do_caixa():
         st.divider()
 
     aba_nova, aba_editar = st.tabs(["➕ Nova retirada", "✏️ Editar / Excluir"])
@@ -4597,6 +4624,13 @@ def comparativo_anual(base: pd.DataFrame, coluna: str, subir_e_bom: bool = True,
 # Análise: Recicláveis
 # ------------------------------------------------
 def analise_reciclaveis(df: pd.DataFrame) -> None:
+    # O caixa vem antes dos gráficos e antes das duas saídas de emergência
+    # abaixo: ele não depende de plotly nem do recorte filtrado, e é a
+    # pergunta que chega primeiro — "quanto cada lado ainda tem para gastar".
+    st.markdown("**Caixa dos recicláveis** — o que cada lado ainda tem")
+    if cartoes_do_caixa(fora_do_filtro=True):
+        st.divider()
+
     if not TEM_PLOTLY:
         aviso_sem_plotly()
         return
