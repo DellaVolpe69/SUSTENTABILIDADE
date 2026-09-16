@@ -313,7 +313,11 @@ COL_OLEO = "OLEO_LUBRIFICANTE"
 COL_DT_VENCIMENTO = "DT_VENCIMENTO"
 COL_DIAS = "DIAS"  # dias pré-vencimento
 COL_DATA_PAGAMENTO = "DATA_PAGAMENTO"
-COL_BP = "BP FORNECEDORES"  # atenção: espaço no nome, não underscore
+# Plural, com espaço no nome e não underscore. O app leu "BP FORNECEDOR"
+# por um tempo: na gravação isso estoura citando a coluna, mas na LEITURA o
+# select "*" só devolve o que existe — a coluna não vinha, o campo ficava
+# vazio na tela e nada acusava o erro.
+COL_BP = "BP FORNECEDORES"
 
 # Código SAP da filial (COD_ORG_VENDAS), presente nas 5 tabelas. É ele, e
 # não o nome, que define o que cada usuário enxerga: o nome era escrito de
@@ -2025,6 +2029,12 @@ CAMPOS_CUSTO = (
 
 OPCOES_SETOR = ["Sustentabilidade", "Qualidade"]
 
+# FIXO era texto livre: a mesma classificação entrava como "fixo", "FIXO",
+# "F" e em branco, e nenhuma delas agrupa com a outra num relatório. A
+# grafia é a que foi pedida — sem acento em "Variavel" —, porque é o valor
+# que vai para o banco e ele tem de casar com o que já está gravado.
+OPCOES_FIXO = ["Fixo", "Variavel"]
+
 # Quem ficou com o valor retirado dos recicláveis. Lista fechada de duas
 # opções; se entrar um terceiro destino (fundo, doação), ela cresce sem
 # mexer no nome da coluna — que é a vantagem de BENEFICIARIO sobre um
@@ -2055,7 +2065,7 @@ def salvar_custo() -> None:
         "MES": st.session_state.get("cus_mes", MESES[date.today().month - 1]),
         COL_DATA_PAGAMENTO: st.session_state.get("cus_dt_pag", date.today()),
         COL_BP: st.session_state.get("cus_bp", 0.0),
-        "FIXO": txt("cus_fixo"),
+        "FIXO": st.session_state.get("cus_fixo", OPCOES_FIXO[0]),
         "SETOR": st.session_state.get("cus_setor", OPCOES_SETOR[0]),
         "USUARIO": usuario_email_logado,
     }
@@ -2081,10 +2091,10 @@ def form_custos() -> None:
     with c4:
         # coluna float8 no banco; step/format inteiros porque BP é identificador
         st.number_input(
-            "BP FORNECEDORES", min_value=0.0, step=1.0, format="%.0f", key="cus_bp"
+            COL_BP, min_value=0.0, step=1.0, format="%.0f", key="cus_bp"
         )
     with c5:
-        st.text_input("FIXO", key="cus_fixo")
+        st.selectbox("FIXO", OPCOES_FIXO, key="cus_fixo")
     with c6:
         st.selectbox("SETOR", OPCOES_SETOR, key="cus_setor")
 
@@ -2307,8 +2317,10 @@ CAMPOS_EDICAO = {
         campo("VALOR", "decimal"),
         campo("MES", "mes_nome", "MÊS"),   # coluna text: guarda o nome
         campo(COL_DATA_PAGAMENTO, "data", "DATA PAGAMENTO"),
-        campo(COL_BP, "decimal", "BP FORNECEDORES"),
-        campo("FIXO", "texto"),
+        campo(COL_BP, "decimal"),
+        # "opcoes" preserva o que já está no banco: registro antigo com
+        # outra grafia aparece como está, em vez de ser reescrito sem pedir
+        campo("FIXO", "opcoes", opcoes=OPCOES_FIXO),
         campo("SETOR", "opcoes", opcoes=OPCOES_SETOR),
     ],
     "reciclaveis": [
@@ -2375,6 +2387,16 @@ def nome_mes(valor):
             return existente
     numero = para_int(texto, 0)
     return MESES[numero - 1] if 1 <= numero <= 12 else None
+
+
+def ano_de(valor):
+    """O ano de uma data guardada como texto. None quando não dá para ler.
+
+    Recicláveis não tem coluna ANO — tem DATA. Sem isto, filtrar por ano
+    exigiria fatiar string, que quebra na primeira linha em dd/mm/aaaa.
+    """
+    data = para_data(valor)
+    return data.year if data else None
 
 
 def para_data(valor):
@@ -4054,11 +4076,21 @@ FILTROS_RELATORIO = {
         ("SETOR", "multi"),
         ("MES", "mes"),
     ],
-    "reciclaveis": [("FILIAL", "multi"), ("MATERIAL", "multi"), ("PAGAMENTO", "multi")],
+    # tipo "ano": a coluna guarda a data inteira, mas quem lê o relatório
+    # pensa em ano — e o gráfico compara ano contra ano. Um intervalo de
+    # datas obrigava a acertar dois calendários para isolar um exercício.
+    "reciclaveis": [
+        ("FILIAL", "multi"),
+        ("MATERIAL", "multi"),
+        ("PAGAMENTO", "multi"),
+        ("DATA", "ano"),
+    ],
 }
 
 # Coluna de data para o filtro de período, quando a tabela tem uma
-PERIODO_RELATORIO = {"reciclaveis": "DATA"}
+# Havia aqui um PERIODO_RELATORIO, que dava a recicláveis um intervalo de
+# datas. Saiu junto com o st.date_input de duas pontas: a página passou a
+# filtrar por ano, e nenhuma outra pedia intervalo.
 
 # Ordem de leitura do relatório: estas colunas vêm primeiro, o resto entra
 # depois na ordem em que o Supabase devolveu. Sem isso, ANO e MES ficavam no
@@ -4200,13 +4232,23 @@ def filtros_relatorio(pagina: str, df: pd.DataFrame) -> pd.DataFrame:
         for col, tipo in FILTROS_RELATORIO.get(pagina, [])
         if col in df.columns
     ]
-    coluna_data = PERIODO_RELATORIO.get(pagina)
-    tem_periodo = coluna_data in df.columns if coluna_data else False
-
     filtrado = df
-    caixas = st.columns(len(especificacao) + (1 if tem_periodo else 0) or 1)
+    caixas = st.columns(len(especificacao) or 1)
 
     for i, (coluna, tipo) in enumerate(especificacao):
+        if tipo == "ano":
+            # A coluna é uma data; o filtro é o ano dela. Mais recente
+            # primeiro, que é por onde se começa a olhar.
+            anos = sorted({a for a in filtrado[coluna].map(ano_de) if a}, reverse=True)
+            with caixas[i]:
+                escolhidos = st.multiselect(
+                    "ANO", [str(a) for a in anos], key=f"rel_{pagina}_{coluna}_ano"
+                )
+            if escolhidos:
+                aceitos = {int(a) for a in escolhidos}
+                filtrado = filtrado[filtrado[coluna].map(ano_de).isin(aceitos)]
+            continue
+
         if tipo == "mes":
             # a coluna guarda 9 ou "Setembro" conforme a tabela; o rótulo é
             # sempre o nome, e o filtro compara pelo valor original
@@ -4229,26 +4271,6 @@ def filtros_relatorio(pagina: str, df: pd.DataFrame) -> pd.DataFrame:
             escolhidos = st.multiselect(coluna, valores, key=f"rel_{pagina}_{coluna}")
         if escolhidos:
             filtrado = filtrado[filtrado[coluna].map(texto_celula).isin(escolhidos)]
-
-    if tem_periodo:
-        datas = [d for d in (para_data(v) for v in filtrado[coluna_data]) if d]
-        with caixas[-1]:
-            if datas:
-                periodo = st.date_input(
-                    f"{coluna_data} (período)",
-                    value=(min(datas), max(datas)),
-                    format="DD/MM/YYYY",
-                    key=f"rel_{pagina}_periodo",
-                )
-            else:
-                periodo = None
-                st.caption(f"Sem {coluna_data} para filtrar")
-        if isinstance(periodo, (tuple, list)) and len(periodo) == 2:
-            inicio, fim = periodo
-            dentro = filtrado[coluna_data].map(
-                lambda v: (para_data(v) is not None) and (inicio <= para_data(v) <= fim)
-            )
-            filtrado = filtrado[dentro]
 
     return filtrado
 
