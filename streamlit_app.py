@@ -4139,24 +4139,36 @@ def fmt_curto(valor: float) -> str:
 
 
 def variacao_mes_anterior(serie: pd.DataFrame, coluna: str) -> pd.DataFrame:
-    """Acrescenta VARIACAO: o mesmo mês contra o ano anterior, em %.
+    """Acrescenta VARIACAO e ANO_BASE: o mesmo mês contra o ano anterior.
 
-    Fica nulo quando não há o mesmo mês no ano passado, ou quando o ano
-    passado fechou em zero — dividir por zero daria infinito, e "aumento de
-    ∞%" não informa nada.
+    "Ano anterior" é o ano anterior PRESENTE na série, não `ano - 1`. A
+    diferença aparece quando o filtro deixa anos salteados: com 2023 e 2026
+    em tela, comparar 2026 com um 2025 que foi filtrado fora não daria
+    variação nenhuma — a leitura que interessa é 2026 contra 2023, os dois
+    anos que estão no gráfico.
+
+    Fica nulo quando o ano anterior não tem aquele mês, ou quando fechou em
+    zero — dividir por zero daria infinito, e "aumento de ∞%" não informa.
+
+    ANO_BASE diz contra qual ano a conta foi feita: sem isso, com anos
+    salteados, o leitor não tem como saber o que o ▲ está comparando.
     """
     saida = serie.copy()
-    anterior = {
-        (int(a) + 1, int(m)): v
+    anos = sorted({int(a) for a in saida["ANO_N"]})
+    anterior_de = {ano: anos[i - 1] for i, ano in enumerate(anos) if i}
+    valores = {
+        (int(a), int(m)): v
         for a, m, v in zip(saida["ANO_N"], saida["MES_N"], saida[coluna])
     }
-    variacoes = []
+
+    variacoes, bases = [], []
     for ano, mes, valor in zip(saida["ANO_N"], saida["MES_N"], saida[coluna]):
-        base = anterior.get((int(ano), int(mes)))
-        variacoes.append(
-            (valor - base) / base * 100 if base else None
-        )
+        par = anterior_de.get(int(ano))
+        base = valores.get((par, int(mes))) if par else None
+        variacoes.append((valor - base) / base * 100 if base else None)
+        bases.append(par)
     saida["VARIACAO"] = variacoes
+    saida["ANO_BASE"] = bases
     return saida
 
 
@@ -4707,18 +4719,30 @@ def analise_reciclaveis(df: pd.DataFrame) -> None:
     mensal["MES_NOME"] = mensal["MES_N"].map(lambda m: MESES[int(m) - 1])
     mensal["ANO"] = mensal["ANO_N"].astype(str)
 
-    # O rótulo sai só no ano mais recente. Com 5 anos na tela, rotular todas
-    # as linhas deixaria 60 textos sobrepostos — ilegível, que é o defeito
-    # que o gráfico de barras já tinha.
-    ano_recente = int(mensal["ANO_N"].max())
+    # Rótulo em todos os anos, não só no mais recente. Sem filtro são seis
+    # linhas e o gráfico fica carregado, mas é filtrando (uma filial, um
+    # material) que este gráfico é lido de verdade — e aí cada ponto precisa
+    # do número. Duas medidas seguram a legibilidade: valor encurtado
+    # ("R$ 3,1 mil") e os rótulos alternando acima/abaixo da linha, ano a
+    # ano, para vizinhos não escreverem no mesmo lugar.
     mensal["TEXTO"] = [
+        fmt_curto(v) + ("<br>" + seta_variacao(d) if pd.notna(d) else "")
+        for v, d in zip(mensal["TOTAL_N"], mensal["VARIACAO"])
+    ]
+
+    # O hover diz contra QUAL ano a variação foi feita. Com anos salteados
+    # pelo filtro, "vs. o ano anterior" seria ambíguo.
+    mensal["VAR_TXT"] = [
         (
-            fmt_curto(v)
-            + ("<br>" + seta_variacao(d) if pd.notna(d) else "")
-            if int(a) == ano_recente
-            else ""
+            f"{seta_variacao(d)} vs. {int(b)}"
+            if pd.notna(d)
+            else (
+                f"sem o mesmo mês em {int(b)} para comparar"
+                if pd.notna(b)
+                else "primeiro ano da série: nada para comparar"
+            )
         )
-        for a, v, d in zip(mensal["ANO_N"], mensal["TOTAL_N"], mensal["VARIACAO"])
+        for d, b in zip(mensal["VARIACAO"], mensal["ANO_BASE"])
     ]
 
     fig = px.line(
@@ -4729,29 +4753,35 @@ def analise_reciclaveis(df: pd.DataFrame) -> None:
         markers=True,
         text="TEXTO",
         category_orders={"MES_NOME": MESES},
-        custom_data=["VARIACAO"],
+        custom_data=["VAR_TXT"],
     )
     fig.update_traces(
         texttemplate="%{text}",
-        textposition="top center",
         cliponaxis=False,
+        textfont_size=9,
         hovertemplate=(
-            "%{x}<br>R$ %{y:,.2f}"
-            "<br>vs. mesmo mês do ano anterior: %{customdata[0]:+.1f}%"
+            "%{x}<br>R$ %{y:,.2f}<br>%{customdata[0]}"
             "<extra>%{fullData.name}</extra>"
         ),
     )
+    # Alternar o lado do rótulo por ano: com todos "top center", dois anos
+    # de valor parecido escreviam um sobre o outro.
+    for posicao, traco in enumerate(fig.data):
+        traco.textposition = "top center" if posicao % 2 == 0 else "bottom center"
     # folga no topo para o rótulo de duas linhas não encostar na borda
     fig.update_yaxes(range=[0, float(mensal["TOTAL_N"].max()) * 1.30])
-    st.plotly_chart(estiliza(fig, 420), use_container_width=True)
+    st.plotly_chart(estiliza(fig, 460), use_container_width=True)
 
     comparaveis = int(mensal["VARIACAO"].notna().sum())
+    anos_na_tela = sorted(mensal["ANO"].unique())
     st.caption(
-        f"{len(mensal)} mês(es) com lançamento em {mensal['ANO'].nunique()} ano(s). "
-        f"O rótulo mostra o valor de {ano_recente} e, abaixo, a variação contra "
-        f"o mesmo mês do ano anterior — ▲ subiu, ▼ caiu. "
-        f"{comparaveis} mês(es) têm o mesmo mês no ano anterior para comparar; "
-        "nos demais a variação fica em branco em vez de virar 100%."
+        f"{len(mensal)} mês(es) com lançamento em {len(anos_na_tela)} ano(s) "
+        f"({', '.join(anos_na_tela)}). Cada ponto traz o valor e, abaixo, a "
+        "variação contra o mesmo mês do **ano anterior que está no gráfico** — "
+        "se o filtro deixar só 2023 e 2026, a variação de 2026 é contra 2023. "
+        f"▲ subiu, ▼ caiu. {comparaveis} de {len(mensal)} mês(es) têm par para "
+        "comparar; nos demais a variação fica em branco em vez de virar 100%. "
+        "Passe o mouse para ver contra qual ano a conta foi feita."
     )
 
 
