@@ -4726,6 +4726,19 @@ TOTAL_DO_ANO = "Total do ano"
 MEDIA_MES = "Média/mês"
 
 
+def variacao_ano(atual, anterior) -> str:
+    """Variação de um mês contra o mesmo mês do ano anterior.
+
+    Sai "—" quando falta um dos dois lados ou quando a base é zero: mês sem
+    lançamento comparado contra um mês cheio daria uma queda de 100% que
+    nunca aconteceu, e dividir por zero não produz porcentagem.
+    """
+    if pd.isna(atual) or pd.isna(anterior) or not anterior:
+        return "—"
+    delta = (atual - anterior) / anterior
+    return f"{'▲' if delta >= 0 else '▼'} {abs(delta):.1%}".replace(".", ",")
+
+
 def formata_matriz(matriz, renomear: dict, unidades: dict):
     """Renomeia as colunas e formata cada uma na sua unidade.
 
@@ -4939,49 +4952,89 @@ def analise_consumos(df: pd.DataFrame) -> None:
         "completa do ano."
     )
 
-    # ---------- matriz mês x serviço ----------
-    # A matriz de cima responde "como foi cada ano"; esta responde "como foi
-    # cada mês dentro de um ano", que é a pergunta de quem acompanha conta de
-    # luz e coleta de resíduo. Os 12 meses aparecem sempre, mesmo sem
-    # lançamento: a lacuna é informação — mostra o mês que ninguém preencheu.
+    # ---------- detalhe do serviço: mês × ano ----------
+    # A matriz de cima é a visão larga: um ano por linha, todos os serviços
+    # em colunas. Esta é o detalhe de UM serviço — o que está escolhido no
+    # filtro lá em cima —, com o mês na linha e o ano na coluna. É o que
+    # responde "julho deste ano foi melhor que julho do ano passado?", que a
+    # matriz de serviços não responde: nela o ano inteiro cabe numa linha e a
+    # sazonalidade desaparece. Ler na horizontal é o mesmo mês através dos
+    # anos; na vertical, o ano mês a mês.
     st.divider()
-    anos = sorted({int(a) for a in base["ANO_N"]}, reverse=True)
-    esq, _resto = st.columns([1, 3])
-    with esq:
-        ano_mensal = st.selectbox("Ano", anos, key="ind_consumo_ano_mensal")
-    st.markdown(f"**Comparativo mensal por serviço — {ano_mensal}**")
+    st.markdown(f"**Detalhe de {escolha} — mês a mês, ano a ano**")
 
-    do_ano = base[base["ANO_N"] == ano_mensal]
-    mensal = do_ano.groupby("MES_N")[da_matriz].sum()
-    mensal = mensal.reindex(range(1, 13))
+    # Os 12 meses aparecem sempre, mesmo sem lançamento: a lacuna é
+    # informação — mostra o mês que ninguém preencheu.
+    quadro = base.pivot_table(
+        index="MES_N", columns="ANO_N", values="VALOR", aggfunc="sum"
+    ).reindex(range(1, 13))
+    quadro = quadro[sorted(quadro.columns, reverse=True)]
 
-    renomear_mes = {c: r for c, r in renomear.items()}
-    unidade_mes = dict(unidade_da_coluna)
-    mensal = com_derivadas(mensal, kg, rs, rotulo_residuos, rotulo_utilidades,
-                           renomear_mes, unidade_mes)
-
-    # Total e média entram como LINHAS, não coluna: somar meses do mesmo
-    # serviço é legítimo (mesma unidade), somar serviços na horizontal não.
-    # A média é a soma dividida por 12, a mesma regra do PGRS — não a média
-    # dos meses lançados, que inflaria o número de quem lança pouco.
-    resumo = pd.DataFrame(
-        [mensal.sum(min_count=1), mensal.sum(min_count=1) / 12],
-        index=[TOTAL_DO_ANO, MEDIA_MES],
+    # Total e média entram como LINHAS. Aqui a coluna é um ano do mesmo
+    # serviço, então somar a coluna é soma legítima. A média divide por 12
+    # sempre, a mesma regra do PGRS — não pela quantidade de meses lançados,
+    # que inflaria o número de quem lança pouco.
+    totais = quadro.sum(min_count=1)
+    detalhe = pd.concat(
+        [quadro, pd.DataFrame([totais, totais / 12],
+                              index=[TOTAL_DO_ANO, MEDIA_MES])]
     )
-    mensal.index = [MESES[int(m) - 1] for m in mensal.index]
-    completo = pd.concat([mensal, resumo])
-    completo.index.name = "MÊS"
+    detalhe.index = [MESES[m - 1] for m in range(1, 13)] + [TOTAL_DO_ANO, MEDIA_MES]
 
-    st.dataframe(formata_matriz(completo, renomear_mes, unidade_mes),
-                 use_container_width=True)
-
-    meses_com_dado = int(do_ano["MES_N"].nunique())
-    st.caption(
-        f"{meses_com_dado} de 12 meses com lançamento em {ano_mensal}. "
-        f"“—” é mês sem registro, não zero. A linha **{MEDIA_MES}** divide o "
-        "total por 12 sempre, como manda o PGRS — mês sem coleta conta como "
-        "zero no ano, e não sai da conta."
+    exibir_mes = pd.DataFrame(
+        {
+            str(ano): detalhe[ano].map(
+                lambda v: "—" if pd.isna(v) else formata(v)
+            )
+            for ano in detalhe.columns
+        },
+        index=detalhe.index,
     )
+
+    # A coluna de variação só existe se houver dois anos, e só na linha em
+    # que os dois têm registro. A seta segue a regra do resto da tela:
+    # consumir mais é resultado ruim.
+    if len(detalhe.columns) >= 2:
+        recente, anterior_ano = detalhe.columns[0], detalhe.columns[1]
+        rotulo_var = f"{recente} vs {anterior_ano}"
+        variacoes = [
+            variacao_ano(quadro.at[mes, recente], quadro.at[mes, anterior_ano])
+            for mes in range(1, 13)
+        ]
+        # O total do ano em curso tem menos meses que o do ano fechado:
+        # comparar os dois inteiros mostraria economia onde só há calendário.
+        # Esta variação usa apenas os meses que os dois anos têm, a mesma
+        # regra dos cartões lá em cima.
+        juntos = quadro[[recente, anterior_ano]].dropna()
+        variacoes.append(
+            variacao_ano(juntos[recente].sum(min_count=1),
+                         juntos[anterior_ano].sum(min_count=1))
+        )
+        # A média divide os dois totais pelo mesmo 12, então a variação dela
+        # seria a do ano inteiro contra o ano inteiro — justamente a
+        # comparação torta que a linha de cima evita.
+        variacoes.append("—")
+        exibir_mes[rotulo_var] = variacoes
+
+    exibir_mes.index.name = "MÊS"
+    st.dataframe(exibir_mes, use_container_width=True)
+
+    presentes = int(quadro.notna().to_numpy().sum())
+    recado = (
+        f"Só **{escolha}** — troque o serviço no filtro do topo para ver "
+        f"outro. {presentes} de {12 * len(quadro.columns)} meses com "
+        "lançamento no período. “—” é mês sem registro, não zero, e mês sem "
+        f"par no ano anterior não ganha variação. A linha **{MEDIA_MES}** "
+        "divide o total por 12 sempre, como manda o PGRS."
+    )
+    if len(detalhe.columns) >= 2:
+        recado += (
+            " ▲ é consumo maior que no ano anterior. Na linha "
+            f"**{TOTAL_DO_ANO}** a variação compara só os meses que "
+            f"{recente} e {anterior_ano} têm em comum — ano em curso contra "
+            "ano fechado inteiro daria economia de calendário."
+        )
+    st.caption(recado)
 
     if not TEM_PLOTLY:
         aviso_sem_plotly()
