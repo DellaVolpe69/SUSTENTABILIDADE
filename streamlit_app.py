@@ -342,6 +342,11 @@ LIMITE_REGISTROS = 1000
 # e ninguém notaria — o número continuaria plausível.
 LIMITE_SALDO = 100000
 
+# Telas cujo conteúdo entra no saldo dos recicláveis: material lançado
+# aumenta a receita, retirada diminui. Criar, editar ou excluir em
+# qualquer das duas muda o caixa.
+TABELAS_DO_SALDO = ("reciclaveis", "descontos")
+
 
 @st.cache_resource(show_spinner=False)
 def conectar_supabase():
@@ -2165,7 +2170,9 @@ def salvar_reciclaveis() -> None:
         "PAGAMENTO": st.session_state.get("rec_pagamento", OPCOES_PAGAMENTO[0]),
         "USUARIO": usuario_email_logado,
     }
-    concluir("msg_reciclaveis", "reciclaveis", dados, CAMPOS_RECICLAVEIS)
+    # material lançado aumenta a receita: o saldo também muda aqui
+    concluir("msg_reciclaveis", "reciclaveis", dados, CAMPOS_RECICLAVEIS,
+             apos_ok=esquece_saldo)
 
 
 def form_reciclaveis() -> None:
@@ -2500,6 +2507,7 @@ def salvar_edicao(tabela_app, id_registro, registro, mudancas, chave_msg, chave_
     except Exception as erro:
         st.session_state[chave_msg] = ("error", f"Não alterou: {erro}")
         return
+    esquece_saldo(tabela_app)
     campos = ", ".join(sorted(mudancas))
     st.session_state[chave_msg] = ("success", f"Registro #{id_registro} atualizado ({campos}).")
     st.session_state[chave_versao] = st.session_state.get(chave_versao, 0) + 1
@@ -2531,6 +2539,7 @@ def confirmar_exclusao(tabela_app, id_registro, chave_conf, chave_msg, chave_ver
         except Exception as erro:
             aviso = f" ATENÇÃO: a linha saiu, mas o anexo ficou no MinIO ({erro})."
 
+    esquece_saldo(tabela_app)
     st.session_state[chave_msg] = ("success", f"Registro #{id_registro} excluído.{aviso}")
     st.session_state[chave_versao] = st.session_state.get(chave_versao, 0) + 1
 
@@ -3825,6 +3834,26 @@ def saldo_reciclaveis():
     }
 
 
+def esquece_saldo(tabela_app: str = "") -> None:
+    """Descarta o saldo em cache. Chamar depois de mexer no caixa.
+
+    Sem isso o cache de 60s mantinha o número antigo na tela: a retirada
+    aparecia na listagem (que não tem cache) e o cartão continuava dizendo
+    "retirado R$ 0,00" — dois números da mesma página discordando.
+
+    O ttl continua valendo como rede para mudança feita por outra pessoa;
+    o que esta função resolve é a mudança feita por quem está olhando.
+
+    Com tabela_app vazio limpa sempre; com o nome de uma tela, só quando
+    ela participa do saldo — assim editar uma licença não invalida nada.
+    """
+    if tabela_app and tabela_app not in TABELAS_DO_SALDO:
+        return
+    limpar = getattr(saldo_reciclaveis, "clear", None)
+    if callable(limpar):
+        limpar()
+
+
 def saldo_do_beneficiario(nome: str):
     """Saldo de um lado só, para mostrar ao pé do campo. None se não der."""
     numeros = saldo_reciclaveis()
@@ -3860,7 +3889,8 @@ def salvar_desconto() -> None:
         COL_AUTORIZACAO: autorizacao,
         "USUARIO": usuario_email_logado,
     }
-    concluir("msg_descontos", "descontos", dados, CAMPOS_DESCONTO)
+    concluir("msg_descontos", "descontos", dados, CAMPOS_DESCONTO,
+             apos_ok=esquece_saldo)
 
 
 def form_desconto() -> None:
@@ -4692,6 +4722,43 @@ def analise_reciclaveis(df: pd.DataFrame) -> None:
 # ------------------------------------------------
 # Análise: Consumos e Serviços
 # ------------------------------------------------
+TOTAL_DO_ANO = "Total do ano"
+MEDIA_MES = "Média/mês"
+
+
+def formata_matriz(matriz, renomear: dict, unidades: dict):
+    """Renomeia as colunas e formata cada uma na sua unidade.
+
+    Célula vazia sai como "—", não como "0,00 kg": mês sem lançamento é
+    ausência de dado, e zerar sugere que foi medido e deu zero.
+    """
+    exibir = matriz.rename(columns=renomear)
+    for origem, rotulo in renomear.items():
+        if rotulo not in exibir.columns:
+            continue
+        unidade = unidades[origem]
+        exibir[rotulo] = exibir[rotulo].map(
+            lambda v, u=unidade: (
+                "—" if pd.isna(v) else (fmt_brl(v) if u == "R$" else fmt_unidade(v, u))
+            )
+        )
+    return exibir
+
+
+def com_derivadas(quadro, kg: list, rs: list, rotulo_kg: str, rotulo_rs: str,
+                  renomear: dict, unidades: dict):
+    """Acrescenta as somas das duas famílias que compartilham unidade."""
+    if len(kg) > 1:
+        quadro[TOTAL_RESIDUOS] = quadro[[c for c, _ in kg]].sum(axis=1)
+        unidades[TOTAL_RESIDUOS] = "kg"
+        renomear[TOTAL_RESIDUOS] = rotulo_kg
+    if len(rs) > 1:
+        quadro[TOTAL_UTILIDADES] = quadro[[c for c, _ in rs]].sum(axis=1)
+        unidades[TOTAL_UTILIDADES] = "R$"
+        renomear[TOTAL_UTILIDADES] = rotulo_rs
+    return quadro
+
+
 def analise_consumos(df: pd.DataFrame) -> None:
     base = com_competencia("consumos", df)
     if base.empty:
@@ -4859,21 +4926,10 @@ def analise_consumos(df: pd.DataFrame) -> None:
         if coluna_valor and coluna_valor in base.columns:
             unidade_da_coluna[coluna_valor] = "R$"
             renomear[coluna_valor] = f"{rotulo} (R$)"
-    if len(kg) > 1:
-        matriz[TOTAL_RESIDUOS] = matriz[[c for c, _ in kg]].sum(axis=1)
-        unidade_da_coluna[TOTAL_RESIDUOS] = "kg"
-        renomear[TOTAL_RESIDUOS] = rotulo_residuos
-    if len(rs) > 1:
-        matriz[TOTAL_UTILIDADES] = matriz[[c for c, _ in rs]].sum(axis=1)
-        unidade_da_coluna[TOTAL_UTILIDADES] = "R$"
-        renomear[TOTAL_UTILIDADES] = rotulo_utilidades
-
-    exibir = matriz.rename(columns=renomear).sort_index(ascending=False)
-    for origem, rotulo in renomear.items():
-        u = unidade_da_coluna[origem]
-        exibir[rotulo] = exibir[rotulo].map(
-            fmt_brl if u == "R$" else (lambda v, u=u: fmt_unidade(v, u))
-        )
+    matriz = com_derivadas(matriz, kg, rs, rotulo_residuos, rotulo_utilidades,
+                           renomear, unidade_da_coluna)
+    exibir = formata_matriz(matriz.sort_index(ascending=False),
+                            renomear, unidade_da_coluna)
     st.dataframe(exibir, use_container_width=True)
     st.caption(
         "Não há coluna de total da linha: somar kg com m³ e kWh não produz "
@@ -4881,6 +4937,50 @@ def analise_consumos(df: pd.DataFrame) -> None:
         "compartilham unidade — resíduos em kg e utilidades em R$. A matriz "
         "ignora o filtro de serviço acima, de propósito: ela é a visão "
         "completa do ano."
+    )
+
+    # ---------- matriz mês x serviço ----------
+    # A matriz de cima responde "como foi cada ano"; esta responde "como foi
+    # cada mês dentro de um ano", que é a pergunta de quem acompanha conta de
+    # luz e coleta de resíduo. Os 12 meses aparecem sempre, mesmo sem
+    # lançamento: a lacuna é informação — mostra o mês que ninguém preencheu.
+    st.divider()
+    anos = sorted({int(a) for a in base["ANO_N"]}, reverse=True)
+    esq, _resto = st.columns([1, 3])
+    with esq:
+        ano_mensal = st.selectbox("Ano", anos, key="ind_consumo_ano_mensal")
+    st.markdown(f"**Comparativo mensal por serviço — {ano_mensal}**")
+
+    do_ano = base[base["ANO_N"] == ano_mensal]
+    mensal = do_ano.groupby("MES_N")[da_matriz].sum()
+    mensal = mensal.reindex(range(1, 13))
+
+    renomear_mes = {c: r for c, r in renomear.items()}
+    unidade_mes = dict(unidade_da_coluna)
+    mensal = com_derivadas(mensal, kg, rs, rotulo_residuos, rotulo_utilidades,
+                           renomear_mes, unidade_mes)
+
+    # Total e média entram como LINHAS, não coluna: somar meses do mesmo
+    # serviço é legítimo (mesma unidade), somar serviços na horizontal não.
+    # A média é a soma dividida por 12, a mesma regra do PGRS — não a média
+    # dos meses lançados, que inflaria o número de quem lança pouco.
+    resumo = pd.DataFrame(
+        [mensal.sum(min_count=1), mensal.sum(min_count=1) / 12],
+        index=[TOTAL_DO_ANO, MEDIA_MES],
+    )
+    mensal.index = [MESES[int(m) - 1] for m in mensal.index]
+    completo = pd.concat([mensal, resumo])
+    completo.index.name = "MÊS"
+
+    st.dataframe(formata_matriz(completo, renomear_mes, unidade_mes),
+                 use_container_width=True)
+
+    meses_com_dado = int(do_ano["MES_N"].nunique())
+    st.caption(
+        f"{meses_com_dado} de 12 meses com lançamento em {ano_mensal}. "
+        f"“—” é mês sem registro, não zero. A linha **{MEDIA_MES}** divide o "
+        "total por 12 sempre, como manda o PGRS — mês sem coleta conta como "
+        "zero no ano, e não sai da conta."
     )
 
     if not TEM_PLOTLY:
