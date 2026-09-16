@@ -3842,9 +3842,9 @@ def cartoes_do_caixa(fora_do_filtro: bool = False) -> bool:
     diferentes no dia em que alguém mexer num só.
 
     `fora_do_filtro` acrescenta o aviso de que estes cartões ignoram os
-    filtros da tela. No indicador isso é essencial: a "Receita total" ali em
-    cima obedece ao filtro de filial, esta aqui não — e ver dois valores de
-    receita na mesma tela, sem explicação, parece defeito.
+    filtros da tela. No indicador isso é essencial: os cartões do topo
+    obedecem ao filtro de filial e estes não — sem o aviso, dois números da
+    mesma tela se contradizem sem explicação.
 
     Devolve False quando não deu para ler o caixa, para quem chamou decidir
     se desenha um divisor.
@@ -4378,8 +4378,10 @@ CARTOES_PAGINA = {
         ("No prazo", None, "cont", "verde", ("STATUS", "NO PRAZO")),
     ],
     "custos": [("Valor total", "VALOR", "brl", "verde", None)],
+    # Havia um "Receita total" aqui. Saiu: os cartões do caixa, logo abaixo,
+    # já abrem a receita em Diretoria e Filial, e o total repetido no topo
+    # era o mesmo número duas vezes na mesma tela.
     "reciclaveis": [
-        ("Receita total", "TOTAL", "brl", "verde", None),
         # pedido: soma de TOTAL apenas onde o pagamento não entrou
         ("Pagamento pendente", "TOTAL", "brl", "laranja",
          ("PAGAMENTO", "Aguardando Pagamento")),
