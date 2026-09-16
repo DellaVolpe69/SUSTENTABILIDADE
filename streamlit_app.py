@@ -313,7 +313,7 @@ COL_OLEO = "OLEO_LUBRIFICANTE"
 COL_DT_VENCIMENTO = "DT_VENCIMENTO"
 COL_DIAS = "DIAS"  # dias pré-vencimento
 COL_DATA_PAGAMENTO = "DATA_PAGAMENTO"
-COL_BP = "BP FORNECEDOR"  # atenção: espaço no nome, não underscore
+COL_BP = "BP FORNECEDORES"  # atenção: espaço no nome, não underscore
 
 # Código SAP da filial (COD_ORG_VENDAS), presente nas 5 tabelas. É ele, e
 # não o nome, que define o que cada usuário enxerga: o nome era escrito de
@@ -2081,7 +2081,7 @@ def form_custos() -> None:
     with c4:
         # coluna float8 no banco; step/format inteiros porque BP é identificador
         st.number_input(
-            "BP FORNECEDOR", min_value=0.0, step=1.0, format="%.0f", key="cus_bp"
+            "BP FORNECEDORES", min_value=0.0, step=1.0, format="%.0f", key="cus_bp"
         )
     with c5:
         st.text_input("FIXO", key="cus_fixo")
@@ -2307,7 +2307,7 @@ CAMPOS_EDICAO = {
         campo("VALOR", "decimal"),
         campo("MES", "mes_nome", "MÊS"),   # coluna text: guarda o nome
         campo(COL_DATA_PAGAMENTO, "data", "DATA PAGAMENTO"),
-        campo(COL_BP, "decimal", "BP FORNECEDOR"),
+        campo(COL_BP, "decimal", "BP FORNECEDORES"),
         campo("FIXO", "texto"),
         campo("SETOR", "opcoes", opcoes=OPCOES_SETOR),
     ],
