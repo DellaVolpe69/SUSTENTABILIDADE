@@ -1558,9 +1558,9 @@ CAMPOS_CONSUMO = (
     "con_injetada",
     "con_credito",
 )
-# "con_tem_solar" fica FORA desta lista de propósito: é resposta de
-# roteiro, não campo do lançamento. Quem lança doze meses da mesma filial
-# responde uma vez, não doze.
+# "con_tem_solar" e "con_submedicao" ficam FORA desta lista de propósito:
+# são respostas de roteiro, não campos do lançamento. Quem lança doze meses
+# da mesma filial responde uma vez, não doze.
 
 
 def competencia_consumo():
@@ -1610,10 +1610,10 @@ def salvar_consumo() -> None:
         "MES": mes,
         COL_SOLIDOS: st.session_state.get("con_solidos", 0.0),
         COL_OLEO: st.session_state.get("con_oleo", 0.0),
-        "AGUA": st.session_state.get("con_agua", 0.0),
-        COL_AGUA_VALOR: st.session_state.get("con_agua_valor", 0.0),
-        COL_ESGOTO: st.session_state.get("con_esgoto", 0.0),
-        COL_ESGOTO_VALOR: st.session_state.get("con_esgoto_valor", 0.0),
+        "AGUA": valor_se(pede_agua_m3(), "con_agua"),
+        COL_AGUA_VALOR: valor_se(pede_agua_valor(), "con_agua_valor"),
+        COL_ESGOTO: valor_se(pede_esgoto(), "con_esgoto"),
+        COL_ESGOTO_VALOR: valor_se(pede_esgoto(), "con_esgoto_valor"),
         "ENERGIA": st.session_state.get("con_energia", 0.0),
         COL_ENERGIA_VALOR: st.session_state.get("con_energia_valor", 0.0),
         "COMUM": st.session_state.get("con_comum", 0.0),
@@ -1679,25 +1679,84 @@ def form_consumos() -> None:
     # De onde vem a água, antes dos números dela: é esta resposta que
     # explica um m³ vazio — condomínio sem hidrômetro individual não tem
     # volume para informar, e isso não é falta de preenchimento.
-    st.markdown("**Utilidades** — medição e valor da conta")
+    # Energia toda filial tem, e sempre da mesma forma: fica fora do
+    # roteiro condicional.
+    st.markdown("**Energia** — medição e valor da conta")
+    med, val = st.columns(2)
+    with med:
+        st.number_input("ENERGIA (kWh)", min_value=0.0, step=0.01,
+                        format="%.2f", key="con_energia")
+    with val:
+        st.number_input("ENERGIA (R$)", min_value=0.0, step=0.01,
+                        format="%.2f", key="con_energia_valor")
+
+    # Água tem três caminhos, e eles pedem campos diferentes. A pergunta
+    # vem primeiro pelo mesmo motivo da placa solar: campo que não se
+    # aplica, vazio na tela, parece pendência de preenchimento.
+    st.markdown("**Água e esgoto**")
     fat, _resto = st.columns([1, 2])
     with fat:
         st.selectbox(
-            "ÁGUA — faturamento",
+            "Como é faturada a água da filial?",
             OPCOES_AGUA_FATURAMENTO,
+            index=None,
+            placeholder="Escolha para abrir os campos",
             key="con_agua_faturamento",
-            help="Condomínio sem submedição: deixe o m³ em branco e informe "
-                 "o rateio em ÁGUA (R$)",
         )
-    med, val = st.columns(2)
-    with med:
-        st.number_input("ÁGUA (m³)", min_value=0.0, step=0.01, format="%.2f", key="con_agua")
-        st.number_input("ESGOTO (m³)", min_value=0.0, step=0.01, format="%.2f", key="con_esgoto")
-        st.number_input("ENERGIA (kWh)", min_value=0.0, step=0.01, format="%.2f", key="con_energia")
-    with val:
-        st.number_input("ÁGUA (R$)", min_value=0.0, step=0.01, format="%.2f", key="con_agua_valor")
-        st.number_input("ESGOTO (R$)", min_value=0.0, step=0.01, format="%.2f", key="con_esgoto_valor")
-        st.number_input("ENERGIA (R$)", min_value=0.0, step=0.01, format="%.2f", key="con_energia_valor")
+
+    caminho = caminho_agua()
+    if caminho is None:
+        st.caption(
+            "Responda acima. Enquanto não responder, nada de água e esgoto "
+            "é gravado neste lançamento."
+        )
+    elif caminho == AGUA_POCO:
+        st.info(
+            "**Poço artesiano / sem fatura** — não há conta de água nem taxa "
+            "de esgoto para informar. Os quatro campos vão **vazios** para o "
+            "banco."
+        )
+    else:
+        if caminho == AGUA_CONDOMINIO:
+            sub, _sobra = st.columns([1, 2])
+            with sub:
+                st.selectbox(
+                    "O condomínio fornece a leitura do hidrômetro da filial?",
+                    OPCOES_SIM_NAO,
+                    index=None,
+                    placeholder="Escolha uma opção",
+                    key="con_submedicao",
+                    help="Submedição — só muda o que a tela pede, não é gravado",
+                )
+
+        med, val = st.columns(2)
+        with med:
+            if pede_agua_m3():
+                st.number_input("ÁGUA (m³)", min_value=0.0, step=0.01,
+                                format="%.2f", key="con_agua")
+            elif caminho == AGUA_CONDOMINIO:
+                st.caption(
+                    "Sem submedição não há m³ da filial: só o rateio em R$."
+                )
+            if pede_esgoto():
+                st.number_input("ESGOTO (m³)", min_value=0.0, step=0.01,
+                                format="%.2f", key="con_esgoto")
+        with val:
+            st.number_input(
+                "ÁGUA (R$)" if caminho == AGUA_DIRETA else "ÁGUA — RATEIO (R$)",
+                min_value=0.0, step=0.01, format="%.2f", key="con_agua_valor",
+                help=None if caminho == AGUA_DIRETA else
+                "Valor estimado no rateio; em branco se a folha do "
+                "condomínio não detalhar",
+            )
+            if pede_esgoto():
+                st.number_input("ESGOTO (R$)", min_value=0.0, step=0.01,
+                                format="%.2f", key="con_esgoto_valor")
+            elif caminho == AGUA_CONDOMINIO:
+                st.caption(
+                    "No condomínio a taxa de esgoto entra diluída no rateio "
+                    "e não é informada à parte."
+                )
 
     # Num expander porque é a exceção: a maioria das filiais não tem placa
     # solar, e quem só lança a conta de luz não precisa passar por seis
@@ -2384,9 +2443,15 @@ OPCOES_FIXO = ["Fixo", "Variavel"]
 SEM_RESPOSTA = ""
 OPCOES_BANDEIRA = [SEM_RESPOSTA, "Verde", "Amarela", "Vermelha",
                    "Não tem bandeira"]
-OPCOES_AGUA_FATURAMENTO = [SEM_RESPOSTA, "Fatura direta",
-                           "Incluso no condomínio",
-                           "Poço artesiano / sem fatura"]
+AGUA_DIRETA = "Fatura direta"
+AGUA_CONDOMINIO = "Incluso no condomínio"
+AGUA_POCO = "Poço artesiano / sem fatura"
+# Sem opção vazia: o "não respondeu" é o index=None do selectbox. Ter as
+# duas coisas daria dois jeitos de dizer a mesma ausência.
+OPCOES_AGUA_FATURAMENTO = [AGUA_DIRETA, AGUA_CONDOMINIO, AGUA_POCO]
+# Na aba Editar entra a opção vazia: registro antigo tem NULL, e escolher
+# um caminho por ele seria inventar resposta que ninguém deu.
+OPCOES_AGUA_EDICAO = [SEM_RESPOSTA] + OPCOES_AGUA_FATURAMENTO
 OPCOES_SITUACAO = ["Ativo", SITUACAO_NAO_APLICA]
 
 # "A filial tem placa solar?" — roteiro de tela, não dado. Não existe
@@ -2395,6 +2460,46 @@ OPCOES_SITUACAO = ["Ativo", SITUACAO_NAO_APLICA]
 # O que fica gravado é a consequência: filial com placa tem os campos de
 # geração preenchidos, filial sem placa tem os três nulos.
 OPCOES_SIM_NAO = ["Não", "Sim"]
+
+
+def caminho_agua():
+    """Fatura direta, condomínio, poço — ou None enquanto não respondem."""
+    escolha = st.session_state.get("con_agua_faturamento")
+    return escolha if escolha in OPCOES_AGUA_FATURAMENTO else None
+
+
+def pede_agua_m3() -> bool:
+    """Só há volume quando existe hidrômetro lendo a filial.
+
+    Na fatura direta sempre há. No condomínio, só se houver submedição —
+    e essa pergunta também é de roteiro, não vai para o banco. No poço
+    artesiano não há fatura nenhuma: o questionário encerra o setor.
+    """
+    caminho = caminho_agua()
+    if caminho == AGUA_DIRETA:
+        return True
+    if caminho == AGUA_CONDOMINIO:
+        return st.session_state.get("con_submedicao") == "Sim"
+    return False
+
+
+def pede_agua_valor() -> bool:
+    """No condomínio o rateio é o que se paga de água: mesma coluna."""
+    return caminho_agua() in (AGUA_DIRETA, AGUA_CONDOMINIO)
+
+
+def pede_esgoto() -> bool:
+    """A taxa de esgoto só vem discriminada na fatura direta.
+
+    Na folha do condomínio ela entra diluída no rateio, e o questionário
+    não a pede nesse caminho.
+    """
+    return caminho_agua() == AGUA_DIRETA
+
+
+def valor_se(condicao: bool, chave: str):
+    """O valor digitado, ou NULL quando aquele caminho não pede o campo."""
+    return st.session_state.get(chave, 0.0) if condicao else None
 CAMPOS_SOLAR = ("con_gerada", "con_injetada", "con_credito")
 
 
@@ -2693,7 +2798,7 @@ CAMPOS_EDICAO = {
         campo("RECICLAVEIS", "decimal", "RECICLÁVEIS (kg)"),
         campo("CO2", "decimal", "CO² (t)"),
         campo(COL_AGUA_FATURAMENTO, "opcoes", "ÁGUA — FATURAMENTO",
-              opcoes=OPCOES_AGUA_FATURAMENTO),
+              opcoes=OPCOES_AGUA_EDICAO),
         campo(COL_BANDEIRA, "opcoes", "BANDEIRA TARIFÁRIA",
               opcoes=OPCOES_BANDEIRA),
         campo(COL_REATIVO_KVAR, "decimal", "REATIVO (kVAr)"),
