@@ -340,6 +340,21 @@ COL_ESGOTO = "ESGOTO_M3"
 COL_ESGOTO_VALOR = "ESGOTO_VALOR"
 COL_AGUA_VALOR = "AGUA_VALOR"
 COL_ENERGIA_VALOR = "ENERGIA_VALOR"
+# Setor 1 do questionário: o que a fatura de energia traz além do kWh, e a
+# geração solar de quem tem placa.
+COL_BANDEIRA = "BANDEIRA_TARIFARIA"
+COL_REATIVO_KVAR = "REATIVO_KVAR"
+COL_REATIVO_VALOR = "REATIVO_VALOR"
+COL_GERADA = "ENERGIA_GERADA"
+COL_INJETADA = "ENERGIA_INJETADA"
+COL_CREDITO = "ENERGIA_CREDITO"
+# Setor 2: de onde vem a água. Uma coluna resolve os três caminhos do
+# questionário, porque o valor e o volume já têm coluna.
+COL_AGUA_FATURAMENTO = "AGUA_FATURAMENTO"
+# Setor 5/6: "não se aplica a esta filial" é permanente, então mora no
+# PGRS. "Não foi realizado este mês" é a ausência de linha em RESIDUO_MES.
+COL_SITUACAO = "SITUACAO"
+SITUACAO_NAO_APLICA = "Não se aplica"
 
 # Quantos registros as telas carregam. 1000 é o teto padrão do PostgREST
 # no Supabase (db-max-rows): pedir mais não traz mais.
@@ -1535,6 +1550,13 @@ CAMPOS_CONSUMO = (
     "con_madeira",
     "con_reciclaveis",
     "con_co2",
+    "con_agua_faturamento",
+    "con_bandeira",
+    "con_reativo_kvar",
+    "con_reativo_valor",
+    "con_gerada",
+    "con_injetada",
+    "con_credito",
 )
 
 
@@ -1595,6 +1617,13 @@ def salvar_consumo() -> None:
         "MADEIRA": st.session_state.get("con_madeira", 0.0),
         "RECICLAVEIS": st.session_state.get("con_reciclaveis", 0.0),
         "CO2": st.session_state.get("con_co2", 0.0),
+        COL_AGUA_FATURAMENTO: ou_nulo(st.session_state.get("con_agua_faturamento")),
+        COL_BANDEIRA: ou_nulo(st.session_state.get("con_bandeira")),
+        COL_REATIVO_KVAR: st.session_state.get("con_reativo_kvar", 0.0),
+        COL_REATIVO_VALOR: st.session_state.get("con_reativo_valor", 0.0),
+        COL_GERADA: st.session_state.get("con_gerada", 0.0),
+        COL_INJETADA: st.session_state.get("con_injetada", 0.0),
+        COL_CREDITO: st.session_state.get("con_credito", 0.0),
     }
 
     # As linhas da outra tabela vão como apos_insert: se uma delas falhar,
@@ -1644,7 +1673,19 @@ def form_consumos() -> None:
     # lado de propósito: quem digita está olhando a mesma fatura, e ver os
     # dois juntos é o que permite notar m³ alto com valor baixo (ou o
     # contrário) na hora do lançamento, não três meses depois no gráfico.
+    # De onde vem a água, antes dos números dela: é esta resposta que
+    # explica um m³ vazio — condomínio sem hidrômetro individual não tem
+    # volume para informar, e isso não é falta de preenchimento.
     st.markdown("**Utilidades** — medição e valor da conta")
+    fat, _resto = st.columns([1, 2])
+    with fat:
+        st.selectbox(
+            "ÁGUA — faturamento",
+            OPCOES_AGUA_FATURAMENTO,
+            key="con_agua_faturamento",
+            help="Condomínio sem submedição: deixe o m³ em branco e informe "
+                 "o rateio em ÁGUA (R$)",
+        )
     med, val = st.columns(2)
     with med:
         st.number_input("ÁGUA (m³)", min_value=0.0, step=0.01, format="%.2f", key="con_agua")
@@ -1654,6 +1695,34 @@ def form_consumos() -> None:
         st.number_input("ÁGUA (R$)", min_value=0.0, step=0.01, format="%.2f", key="con_agua_valor")
         st.number_input("ESGOTO (R$)", min_value=0.0, step=0.01, format="%.2f", key="con_esgoto_valor")
         st.number_input("ENERGIA (R$)", min_value=0.0, step=0.01, format="%.2f", key="con_energia_valor")
+
+    # Num expander porque é a exceção: a maioria das filiais não tem placa
+    # solar, e quem só lança a conta de luz não precisa passar por seis
+    # campos vazios todo mês.
+    with st.expander("Energia — bandeira, reativo e geração solar"):
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.selectbox("BANDEIRA TARIFÁRIA", OPCOES_BANDEIRA,
+                         key="con_bandeira")
+            st.number_input("ENERGIA GERADA (kWh)", min_value=0.0, step=0.01,
+                            format="%.2f", key="con_gerada",
+                            help="Do site/app das placas solares")
+        with c2:
+            st.number_input("REATIVO EXCEDENTE (kVAr)", min_value=0.0,
+                            step=0.01, format="%.2f", key="con_reativo_kvar")
+            st.number_input("ENERGIA INJETADA (kWh)", min_value=0.0, step=0.01,
+                            format="%.2f", key="con_injetada",
+                            help="Ou “consumo compensado” na fatura")
+        with c3:
+            st.number_input("REATIVO EXCEDENTE (R$)", min_value=0.0, step=0.01,
+                            format="%.2f", key="con_reativo_valor")
+            st.number_input("CRÉDITO ACUMULADO (kWh)", min_value=0.0,
+                            step=0.01, format="%.2f", key="con_credito",
+                            help="Saldo para os próximos meses")
+        st.caption(
+            "Filial sem placa solar deixa os três de geração em zero — é "
+            "isso que a distingue de quem tem placa, não um campo à parte."
+        )
 
     st.markdown("**Resíduos e demais** — só medição")
     c1, c2, c3 = st.columns(3)
@@ -2273,6 +2342,25 @@ OPCOES_SETOR = ["Sustentabilidade", "Qualidade"]
 # que vai para o banco e ele tem de casar com o que já está gravado.
 OPCOES_FIXO = ["Fixo", "Variavel"]
 
+# A primeira opção é vazia de propósito: as linhas antigas não têm essa
+# resposta, e um default escolhido por nós viraria dado inventado em massa.
+SEM_RESPOSTA = ""
+OPCOES_BANDEIRA = [SEM_RESPOSTA, "Verde", "Amarela", "Vermelha",
+                   "Não tem bandeira"]
+OPCOES_AGUA_FATURAMENTO = [SEM_RESPOSTA, "Fatura direta",
+                           "Incluso no condomínio",
+                           "Poço artesiano / sem fatura"]
+OPCOES_SITUACAO = ["Ativo", SITUACAO_NAO_APLICA]
+
+
+def ou_nulo(valor):
+    """Texto vazio vira NULL, não string vazia.
+
+    No banco '' e "ninguém respondeu" são coisas diferentes na hora de
+    contar quantas filiais ainda faltam preencher.
+    """
+    return texto_celula(valor) or None
+
 # Quem ficou com o valor retirado dos recicláveis. Lista fechada de duas
 # opções; se entrar um terceiro destino (fundo, doação), ela cresce sem
 # mexer no nome da coluna — que é a vantagem de BENEFICIARIO sobre um
@@ -2520,6 +2608,15 @@ CAMPOS_EDICAO = {
         campo("MADEIRA", "decimal", "MADEIRA (kg)"),
         campo("RECICLAVEIS", "decimal", "RECICLÁVEIS (kg)"),
         campo("CO2", "decimal", "CO² (t)"),
+        campo(COL_AGUA_FATURAMENTO, "opcoes", "ÁGUA — FATURAMENTO",
+              opcoes=OPCOES_AGUA_FATURAMENTO),
+        campo(COL_BANDEIRA, "opcoes", "BANDEIRA TARIFÁRIA",
+              opcoes=OPCOES_BANDEIRA),
+        campo(COL_REATIVO_KVAR, "decimal", "REATIVO (kVAr)"),
+        campo(COL_REATIVO_VALOR, "decimal", "REATIVO (R$)"),
+        campo(COL_GERADA, "decimal", "ENERGIA GERADA (kWh)"),
+        campo(COL_INJETADA, "decimal", "ENERGIA INJETADA (kWh)"),
+        campo(COL_CREDITO, "decimal", "CRÉDITO ACUMULADO (kWh)"),
     ],
     "licencas": [
         campo("FILIAL", "filial"),
@@ -3334,6 +3431,7 @@ CAMPOS_EDICAO["pgrs"] = [
     campo("COLETA", "texto"),
     campo("DESTINACAO", "texto", "DESTINAÇÃO"),
     campo("FREQUENCIA", "opcoes", "FREQUÊNCIA", opcoes=FREQUENCIAS_PGRS),
+    campo(COL_SITUACAO, "opcoes", "SITUAÇÃO", opcoes=OPCOES_SITUACAO),
 ]
 
 RESUMO_REGISTRO["pgrs"] = ("FILIAL", "ANO", "RESIDUO")
@@ -3799,8 +3897,13 @@ def pdf_pgrs(filial: str, codigo: str, ano: int, df: pd.DataFrame):
                     # no documento original ela já tinha saído de ordem
                     bruto = str(posicao)
                 elif coluna == COL_MEDIA:
-                    media = para_float(linha.get(coluna), None)
-                    bruto = fmt_num(media) if media is not None else "—"
+                    # o auditor quer ler "não se aplica", não um traço que
+                    # tanto significa "não gera" quanto "ninguém lançou"
+                    if nao_se_aplica(linha):
+                        bruto = SITUACAO_NAO_APLICA
+                    else:
+                        media = para_float(linha.get(coluna), None)
+                        bruto = fmt_num(media) if media is not None else "—"
                 else:
                     bruto = texto_celula(linha.get(coluna))
                 # número alinhado à direita: é o que torna a coluna legível
@@ -3890,7 +3993,7 @@ def filtros_pgrs():
 
 CAMPOS_PGRS = (
     "pgrs_residuo", "pgrs_residuo_novo", "pgrs_ibama", "pgrs_classe",
-    "pgrs_unidade", "pgrs_frequencia",
+    "pgrs_unidade", "pgrs_frequencia", "pgrs_situacao",
 ) + tuple(f"pgrs_{c}" for c in COLUNAS_ABERTAS_PGRS) + tuple(
     f"pgrs_{c}_novo" for c in COLUNAS_ABERTAS_PGRS
 )
@@ -3915,6 +4018,7 @@ def salvar_pgrs(filial: str, ano: int) -> None:
         "CLASSE": txt("pgrs_classe"),
         COL_UNIDADE: txt("pgrs_unidade"),
         "FREQUENCIA": txt("pgrs_frequencia"),
+        COL_SITUACAO: txt("pgrs_situacao") or OPCOES_SITUACAO[0],
         "USUARIO": usuario_email_logado,
     }
     for coluna in COLUNAS_ABERTAS_PGRS:
@@ -3957,6 +4061,11 @@ def form_pgrs(filial: str, ano: int) -> None:
     with c3:
         st.text_input("UNIDADE", key="pgrs_unidade")
         st.selectbox("FREQUÊNCIA", FREQUENCIAS_PGRS, key="pgrs_frequencia")
+        st.selectbox(
+            "SITUAÇÃO", OPCOES_SITUACAO, key="pgrs_situacao",
+            help="“Não se aplica” quando esta filial não gera este resíduo — "
+                 "o documento imprime isso em vez de deixar a média vazia",
+        )
 
     st.markdown("**Manejo**")
     c1, c2, c3 = st.columns(3)
@@ -3969,10 +4078,14 @@ def form_pgrs(filial: str, ano: int) -> None:
     residuo = nome_residuo()
     calculada = media_anual_calculada(residuo, codigo_da_filial(filial), ano)
     if calculada is None:
+        # A mensagem antiga dizia "não tem coluna em Consumos" — verdade até
+        # os resíduos passarem a ter linha em RESIDUO_MES. Hoje todos os 11
+        # têm origem; o que falta é lançamento naquele ano.
         st.warning(
-            f"**{residuo or 'Este resíduo'}** ainda não tem coluna em "
-            "Consumos e Serviços, então não há de onde tirar a média. "
-            "Ela aparece em branco no documento até a coluna existir."
+            f"**{residuo or 'Este resíduo'}** não tem lançamento em {ano}, "
+            "então não há de onde tirar a média. Lance a quantidade em "
+            "Consumos e Serviços — ou marque **SITUAÇÃO = "
+            f"{SITUACAO_NAO_APLICA}** se esta filial não gera este resíduo."
         )
     else:
         st.info(
@@ -4054,12 +4167,24 @@ def documento_pgrs(filial: str, ano: int, codigo: str) -> None:
     st.dataframe(limpa_ordem_pgrs(df), hide_index=True, use_container_width=True)
 
     calculados = int(df["ORIGEM DA MEDIA"].eq("Consumos e Serviços").sum())
-    st.caption(
+    fora = int(df["ORIGEM DA MEDIA"].eq(SITUACAO_NAO_APLICA.lower()).sum())
+    recado = (
         f"{len(df)} resíduo(s) em {filial} · {ano}. "
-        f"{calculados} com média vinda de Consumos e Serviços "
-        f"(soma do ano ÷ 12). Os outros {len(df) - calculados} ficam em "
-        "branco enquanto não tiverem coluna lá."
+        f"{calculados} com média vinda de Consumos e Serviços (soma do ano "
+        "÷ 12)."
     )
+    if fora:
+        recado += (
+            f" {fora} marcado(s) como **{SITUACAO_NAO_APLICA}** — o "
+            "documento imprime isso, em vez de média vazia."
+        )
+    restantes = len(df) - calculados - fora
+    if restantes:
+        recado += (
+            f" {restantes} sem lançamento no ano ficam em branco: o resíduo "
+            "existe na filial, mas ninguém informou quantidade."
+        )
+    st.caption(recado)
 
     st.divider()
     form_cabecalho_pgrs(filial, codigo)
@@ -4099,6 +4224,15 @@ def documento_pgrs(filial: str, ano: int, codigo: str) -> None:
             )
 
 
+def nao_se_aplica(linha) -> bool:
+    """A linha está marcada como "não se aplica" nesta filial?
+
+    Compara sem acento e sem caixa: as linhas antigas foram digitadas à
+    mão e "NÃO SE APLICA" tem de valer igual.
+    """
+    return chave_nome(linha.get(COL_SITUACAO)) == chave_nome(SITUACAO_NAO_APLICA)
+
+
 def com_media_anual(df: pd.DataFrame, codigo: str, ano: int) -> pd.DataFrame:
     """Preenche a média calculada por cima da digitada, quando existe.
 
@@ -4108,10 +4242,16 @@ def com_media_anual(df: pd.DataFrame, codigo: str, ano: int) -> pd.DataFrame:
     saida = df.copy()
     medias, origens = [], []
     for _, linha in saida.iterrows():
+        # resíduo que a filial não gera não tem média para calcular, e
+        # calcular daria zero — que se lê como "gerou e não coletou"
+        if nao_se_aplica(linha):
+            medias.append(None)
+            origens.append(SITUACAO_NAO_APLICA.lower())
+            continue
         calculada = media_anual_calculada(linha.get("RESIDUO"), codigo, ano)
         medias.append(calculada)
         origens.append("Consumos e Serviços" if calculada is not None
-                       else "sem coluna em Consumos")
+                       else "sem lançamento no ano")
     saida[COL_MEDIA] = medias
     saida["ORIGEM DA MEDIA"] = origens
     return saida
