@@ -280,6 +280,10 @@ TABELAS_DB = {
     "reciclaveis": "SUSTENTABILIDADE_RECICLAVEIS",
     "pgrs": "SUSTENTABILIDADE_PRGS",
     "descontos": "SUSTENTABILIDADE_DESCONTO_RECICLAGEM",
+    # Formato longo: uma linha por resíduo, não uma coluna por resíduo.
+    # Resíduo novo passa a ser um valor, não um ALTER TABLE seguido de
+    # mexer em formulário, matriz e PDF.
+    "residuos": "SUSTENTABILIDADE_RESIDUO_MES",
 }
 
 # Retirada do valor que os recicláveis renderam. Tabela própria porque o
@@ -1536,6 +1540,34 @@ def competencia_consumo():
     return ano, MESES.index(nome_mes) + 1
 
 
+def linhas_do_mes(ano: int, mes: int, filial: str) -> list:
+    """Uma linha por resíduo com quantidade lançada.
+
+    Zero não vira linha: resíduo que não teve saída no mês é ausência, e
+    gravar zero diria que houve coleta de nada. A diferença aparece na
+    média anual do PGRS, que divide a soma por 12 de qualquer jeito.
+
+    Uma linha aqui é UMA COLETA. Este caminho grava a do mês inteiro, sem
+    MTR; quem for detalhar depois acrescenta as demais, e o total do mês é
+    a soma delas.
+    """
+    linhas = []
+    for nome, unidade in RESIDUOS_EM_LINHA:
+        quantidade = para_float(st.session_state.get(chave_residuo(nome)), 0.0) or 0.0
+        if quantidade <= 0:
+            continue
+        linhas.append({
+            "FILIAL": filial,
+            "ANO": ano,
+            "MES": mes,
+            "RESIDUO": nome,
+            "QUANTIDADE": quantidade,
+            "UNIDADE": unidade,
+            "USUARIO": usuario_email_logado,
+        })
+    return linhas
+
+
 def salvar_consumo() -> None:
     if not txt("con_filial"):
         st.session_state["msg_consumos"] = ("warning", "Informe a FILIAL.")
@@ -1559,7 +1591,30 @@ def salvar_consumo() -> None:
         "RECICLAVEIS": st.session_state.get("con_reciclaveis", 0.0),
         "CO2": st.session_state.get("con_co2", 0.0),
     }
-    concluir("msg_consumos", "consumos", dados, CAMPOS_CONSUMO)
+
+    # As linhas da outra tabela vão como apos_insert: se uma delas falhar,
+    # concluir() desfaz o registro de CONSUMO junto. Meio lançamento gravado
+    # seria pior que nenhum — ninguém descobriria que faltou metade.
+    linhas = linhas_do_mes(ano, mes, dados["FILIAL"])
+
+    def grava_residuos(_criada):
+        gravadas = []
+        for linha in linhas:
+            ok, msg, nova = inserir("residuos", linha)
+            if not ok:
+                for feita in gravadas:
+                    remover("residuos", feita.get("id"))
+                raise RuntimeError(msg)
+            gravadas.append(nova)
+        if not gravadas:
+            return None
+        return f"Registro gravado, com {len(gravadas)} resíduo(s) no controle mensal."
+
+    concluir(
+        "msg_consumos", "consumos", dados,
+        CAMPOS_CONSUMO + campos_residuo(),
+        apos_insert=grava_residuos,
+    )
 
 
 def form_consumos() -> None:
@@ -1605,6 +1660,25 @@ def form_consumos() -> None:
     with c3:
         st.number_input("COMUM (kg)", min_value=0.0, step=0.01, format="%.2f", key="con_comum")
         st.number_input("CO² (t)", min_value=0.0, step=0.01, format="%.2f", key="con_co2")
+
+    # Estes não têm coluna em CONSUMO. Ficam no mesmo formulário porque são
+    # a mesma pergunta — quanto saiu no mês, nesta filial — e quem lança já
+    # está com a competência preenchida na tela. O que muda é só o destino:
+    # cada um vira uma linha em SUSTENTABILIDADE_RESIDUO_MES.
+    st.markdown("**Outros resíduos** — controle mensal por resíduo")
+    caixas = st.columns(3)
+    for posicao, (nome, unidade) in enumerate(RESIDUOS_EM_LINHA):
+        with caixas[posicao % 3]:
+            st.number_input(
+                f"{nome.upper()} ({unidade})",
+                min_value=0.0, step=0.01, format="%.2f",
+                key=chave_residuo(nome),
+            )
+    st.caption(
+        "Resíduo sem saída no mês fica em zero e **não vira lançamento** — "
+        "ausência não é medição de zero. O MTR e o comprovante de cada "
+        "coleta entram no detalhe, depois de salvar."
+    )
 
     st.button("💾 Salvar", key="btn_salvar_con", on_click=salvar_consumo, type="primary")
     render_msg("msg_consumos")
@@ -2933,12 +3007,55 @@ def medias_do_ano(codigo_filial: str, ano: int) -> dict:
     return medias
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def medias_em_linha(codigo_filial: str, ano: int) -> dict:
+    """Média anual dos resíduos que moram em linha, não em coluna.
+
+    Mesma regra dos outros: soma do ano dividida por 12, sempre. A chave é
+    o nome normalizado, então 'Lona de freio' e 'LONA DE FREIO' caem no
+    mesmo resíduo — as linhas vêm de filiais diferentes e a grafia varia.
+
+    Uma linha é uma coleta, então somar as linhas do ano é somar todas as
+    coletas: é justamente o total destinado que o PGRS pede.
+    """
+    if not codigo_filial:
+        return {}
+    try:
+        cliente = conectar_supabase()
+        resposta = (
+            cliente.table(TABELAS_DB["residuos"])
+            .select('"RESIDUO","QUANTIDADE"')
+            .eq(COL_COD_FILIAL, codigo_filial)
+            .eq("ANO", int(ano))
+            .limit(LIMITE_REGISTROS)
+            .execute()
+        )
+    except Exception:
+        return {}
+
+    somas = {}
+    for linha in resposta.data or []:
+        chave = chave_nome(linha.get("RESIDUO"))
+        if not chave:
+            continue
+        somas[chave] = somas.get(chave, 0.0) + (
+            para_float(linha.get("QUANTIDADE"), 0.0) or 0.0
+        )
+    return {chave: soma / 12 for chave, soma in somas.items()}
+
+
 def media_anual_calculada(residuo, codigo_filial: str, ano: int):
-    """A média do resíduo, ou None quando ele não é medido no app."""
+    """A média do resíduo, ou None quando ele não é medido em lugar nenhum.
+
+    Duas origens, porque os resíduos moram em dois formatos: os cinco
+    antigos em colunas de CONSUMO, os demais em linhas de RESIDUO_MES. Quem
+    chama não precisa saber de qual — e no dia em que os cinco migrarem,
+    some o primeiro caminho e mais nada muda.
+    """
     coluna = coluna_do_residuo(residuo)
-    if not coluna:
-        return None
-    return medias_do_ano(codigo_filial, ano).get(coluna)
+    if coluna:
+        return medias_do_ano(codigo_filial, ano).get(coluna)
+    return medias_em_linha(codigo_filial, ano).get(chave_nome(residuo))
 
 
 # Código IBAMA, classe e unidade são fixos por resíduo: escolher o resíduo
@@ -2956,6 +3073,29 @@ RESIDUOS_PGRS = {
     "Borra de tinta": ("F017", "I", "LT"),
     "Madeira": ("150103", "II B", "KG"),
 }
+
+# Os resíduos do PGRS que CONSUMO não mede. A lista não é escrita à mão:
+# é o que sobra depois de tirar os que já têm coluna, segundo o mesmo
+# coluna_do_residuo() que o PGRS usa para calcular a média anual. Assim as
+# duas telas não podem discordar sobre quem é medido onde — e um resíduo
+# que ganhar coluna em CONSUMO sai daqui sozinho.
+RESIDUOS_EM_LINHA = [
+    (nome, unidade)
+    for nome, (_cod, _classe, unidade) in RESIDUOS_PGRS.items()
+    if not coluna_do_residuo(nome)
+]
+
+
+def chave_residuo(nome: str) -> str:
+    """Key do campo daquele resíduo. Sai do nome normalizado, não da
+    posição na lista: inserir um resíduo no meio não pode renomear a key
+    dos outros — no Streamlit isso trocaria o valor digitado de lugar."""
+    return "con_res_" + chave_nome(nome).replace(" ", "_").replace("/", "_").lower()
+
+
+def campos_residuo() -> tuple:
+    return tuple(chave_residuo(nome) for nome, _ in RESIDUOS_EM_LINHA)
+
 
 FREQUENCIAS_PGRS = ["Sob Demanda", "1x semana", "2x semana", "3x semana",
                     "Quinzenal", "Mensal", "Trimestral", "Semestral", "Anual"]
@@ -2994,6 +3134,33 @@ CAMPOS_EDICAO["descontos"] = [
 ]
 
 RESUMO_REGISTRO["descontos"] = ("FILIAL", COL_DATA_RETIRADA, "VALOR")
+
+# Uma linha desta tabela é UMA COLETA. Os campos de MTR, fornecedor e
+# comprovante existem aqui antes da tela que os preenche: o caminho do
+# formulário de consumos grava a coleta do mês sem eles, e é por aqui que
+# se completa enquanto o detalhe não existe.
+OPCOES_EXECUCAO = ["Interno", "Terceirizado"]
+OPCOES_FINANCEIRO = ["Sem custo", "Receita", "Custo"]
+
+CAMPOS_EDICAO["residuos"] = [
+    campo("FILIAL", "filial"),
+    campo("ANO", "inteiro", minimo=1990, maximo=2100),
+    campo("MES", "mes", "MÊS"),
+    campo("RESIDUO", "texto", "RESÍDUO"),
+    campo("QUANTIDADE", "decimal"),
+    campo("UNIDADE", "texto"),
+    campo("TIPO_FINANCEIRO", "opcoes", "RETORNO FINANCEIRO",
+          opcoes=OPCOES_FINANCEIRO),
+    campo("VALOR", "decimal", "VALOR (R$)"),
+    campo("EXECUCAO", "opcoes", "EXECUÇÃO", opcoes=OPCOES_EXECUCAO),
+    campo("FORNECEDOR", "texto"),
+    campo("CNPJ_FORNECEDOR", "texto", "CNPJ DO FORNECEDOR"),
+    campo("DATA_COLETA", "data", "DATA DA COLETA"),
+    campo("MTR", "texto", "MTR / CONTROLE"),
+    campo("OBSERVACAO", "texto", "OBSERVAÇÃO"),
+]
+
+RESUMO_REGISTRO["residuos"] = ("FILIAL", "RESIDUO", "QUANTIDADE")
 
 
 # Colunas cujo valor se repete mas não cabe em lista fixa: coleta e
