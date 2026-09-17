@@ -3053,6 +3053,12 @@ def painel_evidencia(id_registro, versao, tabela_app: str = "licencas",
         st.caption("MinIO indisponível — não foi possível listar o anexo.")
         return
 
+    # Bucket que ainda não existe NÃO é falha: quem o cria é o primeiro
+    # upload (create_bucket_if_not_exists roda dentro do put_object). Antes
+    # desta distinção, a primeira visita a uma tela com bucket novo mostrava
+    # um NoSuchBucket cru do S3 — que parece defeito de configuração e faz
+    # perder tempo procurando problema onde não tem.
+    sem_bucket = False
     try:
         objetos = list(
             manager.client.list_objects(
@@ -3060,10 +3066,17 @@ def painel_evidencia(id_registro, versao, tabela_app: str = "licencas",
             )
         )
     except Exception as erro:
-        st.caption(f"Falha ao listar o anexo: {erro}")
-        return
+        if "NoSuchBucket" not in str(erro):
+            st.caption(f"Falha ao listar o anexo: {erro}")
+            return
+        objetos, sem_bucket = [], True
 
-    if not objetos:
+    if sem_bucket:
+        st.caption(
+            f"Nenhum anexo ainda nesta tela — o bucket `{bucket}` é criado "
+            "no primeiro arquivo enviado aqui."
+        )
+    elif not objetos:
         st.warning("Este registro está sem evidência no bucket.")
     for obj in objetos:
         esq, dir_ = st.columns([3, 1])
