@@ -4337,7 +4337,29 @@ def fmt_curto(valor: float) -> str:
     return f"R$ {valor:,.0f}".replace(",", ".")
 
 
-def variacao_mes_anterior(serie: pd.DataFrame, coluna: str) -> pd.DataFrame:
+def variacao_mes_a_mes(serie: pd.DataFrame, coluna: str) -> pd.DataFrame:
+    """Acrescenta VARIACAO_MES: contra o mês imediatamente anterior.
+
+    Anterior no CALENDÁRIO, não na série. Com um mês sem lançamento, a
+    linha anterior da tabela é de dois meses atrás, e a conta diria que a
+    variação aconteceu de um mês para o outro. Janeiro compara com dezembro
+    do ano passado, que é o mês que veio antes de verdade.
+    """
+    saida = serie.copy()
+    valores = {
+        (int(a), int(m)): v
+        for a, m, v in zip(saida["ANO_N"], saida["MES_N"], saida[coluna])
+    }
+    variacoes = []
+    for ano, mes, valor in zip(saida["ANO_N"], saida["MES_N"], saida[coluna]):
+        antes = (int(ano), int(mes) - 1) if int(mes) > 1 else (int(ano) - 1, 12)
+        base = valores.get(antes)
+        variacoes.append((valor - base) / base * 100 if base else None)
+    saida["VARIACAO_MES"] = variacoes
+    return saida
+
+
+def variacao_ano_a_ano(serie: pd.DataFrame, coluna: str) -> pd.DataFrame:
     """Acrescenta VARIACAO e ANO_BASE: o mesmo mês contra o ano anterior.
 
     "Ano anterior" é o ano anterior PRESENTE na série, não `ano - 1`. A
@@ -4904,7 +4926,8 @@ def analise_reciclaveis(df: pd.DataFrame) -> None:
         .sum()
         .sort_values(["ANO_N", "MES_N"])
     )
-    mensal = variacao_mes_anterior(mensal, "TOTAL_N")
+    mensal = variacao_ano_a_ano(mensal, "TOTAL_N")
+    mensal = variacao_mes_a_mes(mensal, "TOTAL_N")
     mensal["MES_NOME"] = mensal["MES_N"].map(lambda m: MESES[int(m) - 1])
     mensal["ANO"] = mensal["ANO_N"].astype(str)
 
@@ -4919,8 +4942,10 @@ def analise_reciclaveis(df: pd.DataFrame) -> None:
         for v, d in zip(mensal["TOTAL_N"], mensal["VARIACAO"])
     ]
 
-    # O hover diz contra QUAL ano a variação foi feita. Com anos salteados
-    # pelo filtro, "vs. o ano anterior" seria ambíguo.
+    # O hover traz as DUAS comparações, que respondem perguntas diferentes:
+    # contra o mês anterior é "estamos melhorando?"; contra o mesmo mês do
+    # ano passado é "melhoramos descontando a sazonalidade?". Uma queda em
+    # fevereiro pode ser só fevereiro sendo fevereiro.
     mensal["VAR_TXT"] = [
         (
             f"{seta_variacao(d)} vs. {int(b)}"
@@ -4933,6 +4958,14 @@ def analise_reciclaveis(df: pd.DataFrame) -> None:
         )
         for d, b in zip(mensal["VARIACAO"], mensal["ANO_BASE"])
     ]
+    mensal["VAR_MES_TXT"] = [
+        (
+            f"{seta_variacao(d)} vs. {MESES[(int(m) - 2) % 12]}"
+            if pd.notna(d)
+            else "sem o mês anterior para comparar"
+        )
+        for d, m in zip(mensal["VARIACAO_MES"], mensal["MES_N"])
+    ]
 
     fig = px.line(
         mensal,
@@ -4942,14 +4975,16 @@ def analise_reciclaveis(df: pd.DataFrame) -> None:
         markers=True,
         text="TEXTO",
         category_orders={"MES_NOME": MESES},
-        custom_data=["VAR_TXT"],
+        custom_data=["VAR_TXT", "VAR_MES_TXT"],
     )
     fig.update_traces(
         texttemplate="%{text}",
         cliponaxis=False,
         textfont_size=9,
         hovertemplate=(
-            "%{x}<br>R$ %{y:,.2f}<br>%{customdata[0]}"
+            "%{x}<br>R$ %{y:,.2f}"
+            "<br>mês a mês: %{customdata[1]}"
+            "<br>ano a ano: %{customdata[0]}"
             "<extra>%{fullData.name}</extra>"
         ),
     )
@@ -4970,7 +5005,9 @@ def analise_reciclaveis(df: pd.DataFrame) -> None:
         "se o filtro deixar só 2023 e 2026, a variação de 2026 é contra 2023. "
         f"▲ subiu, ▼ caiu. {comparaveis} de {len(mensal)} mês(es) têm par para "
         "comparar; nos demais a variação fica em branco em vez de virar 100%. "
-        "Passe o mouse para ver contra qual ano a conta foi feita."
+        "**Passe o mouse** para ver as duas comparações: contra o mês "
+        "anterior (estamos melhorando?) e contra o ano anterior (melhoramos "
+        "descontando a sazonalidade?)."
     )
 
 
@@ -5401,6 +5438,139 @@ def analise_licencas(df: pd.DataFrame) -> None:
         "total da filial."
     )
 
+    grafico_atrasos(base)
+
+
+TOPO_ATRASO = 15
+
+
+def grafico_atrasos(base: pd.DataFrame) -> None:
+    """Quem está vencido há mais tempo, e qual licença vence mais.
+
+    O atraso sai da DATA, não do STATUS. Os dois discordam na base: existe
+    linha com STATUS "Vencido" e vencimento em 2027 — status que ficou para
+    trás de uma renovação. Ordenar pelo status colocaria essa no topo da
+    fila de quem precisa renovar hoje.
+
+    DT_VENCIMENTO é text no banco, então parte das datas não é legível. O
+    que não dá para ler não entra no ranking e é contado na legenda: uma
+    licença que ninguém consegue datar é problema de cadastro, e esconder
+    isso faria o gráfico parecer completo.
+    """
+    if COL_DT_VENCIMENTO not in base.columns:
+        st.info(f"Falta a coluna {COL_DT_VENCIMENTO} para calcular o atraso.")
+        return
+
+    hoje = date.today()
+    quadro = base.copy()
+    quadro["VENCIMENTO"] = quadro[COL_DT_VENCIMENTO].map(para_data)
+    quadro["ATRASO"] = quadro["VENCIMENTO"].map(
+        lambda d: (hoje - d).days if d else None
+    )
+
+    ilegivel = quadro[quadro["VENCIMENTO"].isna()]
+    atrasadas = quadro[quadro["ATRASO"].map(lambda v: pd.notna(v) and v > 0)]
+
+    st.divider()
+    st.markdown("**Vencidas há mais tempo** — o que renovar primeiro")
+
+    if atrasadas.empty:
+        st.success("Nenhuma licença com vencimento no passado. 👏")
+        if len(ilegivel):
+            st.caption(
+                f"{len(ilegivel)} licença(s) com {COL_DT_VENCIMENTO} ilegível "
+                "ficam fora desta conta."
+            )
+        return
+
+    fila = atrasadas.sort_values("ATRASO", ascending=False).head(TOPO_ATRASO)
+    # o rótulo junta licença e filial: a mesma licença aparece em várias
+    # filiais, e sem a filial duas barras ficariam com o mesmo nome
+    fila = fila.assign(
+        ROTULO=[
+            f"{texto_celula(lic) or '(sem nome)'} · {texto_celula(fil)}"
+            for lic, fil in zip(fila["LICENCA"], fila["FILIAL_N"])
+        ]
+    )
+
+    fig = px.bar(
+        fila.sort_values("ATRASO"),   # asc: o pior fica no topo
+        x="ATRASO", y="ROTULO", orientation="h", text="ATRASO",
+        color="STATUS_N",
+        category_orders={"STATUS_N": list(CORES_STATUS)},
+        color_discrete_map=CORES_STATUS,
+    )
+    fig.update_traces(
+        texttemplate="%{text} dias",
+        textposition="outside",
+        cliponaxis=False,
+        hovertemplate="%{y}<br>%{x} dias de atraso<extra>%{fullData.name}</extra>",
+    )
+    fig.update_xaxes(range=[0, float(fila["ATRASO"].max()) * 1.22],
+                     title="dias de atraso")
+    fig.update_yaxes(title="")
+    st.plotly_chart(estiliza(fig, max(320, 26 * len(fila) + 110)),
+                    use_container_width=True)
+
+    # STATUS que não acompanhou a data: vale avisar, é erro de cadastro
+    diz_vencido = quadro["STATUS_N"] == "VENCIDO"
+    futuro = quadro["ATRASO"].map(lambda v: pd.notna(v) and v <= 0)
+    teimosas = int((diz_vencido & futuro).sum())
+
+    recado = (
+        f"{len(atrasadas)} licença(s) com vencimento no passado; o gráfico "
+        f"mostra as {min(TOPO_ATRASO, len(atrasadas))} mais antigas. O atraso "
+        "é contado da data, não do STATUS."
+    )
+    if len(ilegivel):
+        recado += (
+            f" **{len(ilegivel)} não entram**: a {COL_DT_VENCIMENTO} delas não "
+            "é uma data legível — a coluna é texto no banco."
+        )
+    if teimosas:
+        recado += (
+            f" **{teimosas}** estão marcadas como VENCIDO mas têm vencimento "
+            "futuro: status que ficou para trás de uma renovação."
+        )
+    st.caption(recado)
+
+    # ---------- qual licença vence mais ----------
+    # Agrupado pelo nome normalizado: "Caixa de Gordura" e "Caixa de gordura"
+    # são a mesma licença e não podem virar duas barras de 1.
+    st.markdown("**Quais licenças mais vencem** — contagem de atrasadas")
+    grafias = {}
+    for nome in atrasadas["LICENCA"]:
+        texto = texto_celula(nome) or "(sem nome)"
+        por_nome = grafias.setdefault(chave_nome(texto), {})
+        por_nome[texto] = por_nome.get(texto, 0) + 1
+
+    contagem_tipo = pd.DataFrame(
+        [
+            {"LICENCA_N": mais_frequente(por_nome), "QTD": sum(por_nome.values())}
+            for por_nome in grafias.values()
+        ]
+    ).sort_values("QTD", ascending=True)
+
+    fig = px.bar(
+        contagem_tipo.tail(TOPO_ATRASO),
+        x="QTD", y="LICENCA_N", orientation="h", text="QTD",
+    )
+    fig.update_traces(
+        textposition="outside", cliponaxis=False,
+        marker_color=CORES_STATUS["VENCIDO"],
+        hovertemplate="%{y}<br>%{x} atrasada(s)<extra></extra>",
+    )
+    fig.update_xaxes(range=[0, float(contagem_tipo["QTD"].max()) * 1.22], title="")
+    fig.update_yaxes(title="")
+    st.plotly_chart(
+        estiliza(fig, max(300, 26 * min(len(contagem_tipo), TOPO_ATRASO) + 100)),
+        use_container_width=True,
+    )
+    st.caption(
+        f"{len(contagem_tipo)} licença(s) diferentes entre as atrasadas. "
+        "Nomes escritos de formas diferentes contam como a mesma licença."
+    )
+
 
 # ------------------------------------------------
 # Análise: Custos e Orçamentos
@@ -5562,6 +5732,79 @@ def analise_custos(df: pd.DataFrame) -> None:
         )
         + ". A inclinação da linha é o mês contra o anterior; a distância "
         "entre as linhas, o mesmo mês contra o ano passado."
+    )
+
+    grafico_fornecedores(base, "VALOR_N")
+
+
+TOPO_FORNECEDOR = 15
+
+
+def grafico_fornecedores(base: pd.DataFrame, coluna_valor: str) -> None:
+    """Quem mais recebeu, do maior para o menor.
+
+    Agrupado pelo nome normalizado, não pelo texto cru: "AMBIPAR" e
+    "Ambipar " são o mesmo fornecedor e, separados, cada um apareceria com
+    metade do valor — o que tiraria os dois do topo da lista justamente por
+    estarem divididos.
+
+    Usa a base com competência, a mesma dos outros gráficos: lançamento sem
+    DATA_PAGAMENTO não entra aqui e já é contado no cartão próprio.
+    """
+    if "FORNECEDOR" not in base.columns or base.empty:
+        return
+
+    st.divider()
+    st.markdown("**Principais fornecedores** — do maior para o menor")
+
+    grafias, somas = {}, {}
+    for nome, valor in zip(base["FORNECEDOR"], base[coluna_valor]):
+        texto = texto_celula(nome) or "(sem fornecedor)"
+        chave = chave_nome(texto)
+        por_nome = grafias.setdefault(chave, {})
+        por_nome[texto] = por_nome.get(texto, 0) + 1
+        somas[chave] = somas.get(chave, 0.0) + float(valor or 0.0)
+
+    quadro = pd.DataFrame(
+        [
+            {"FORNECEDOR_N": mais_frequente(grafias[chave]), "VALOR": soma}
+            for chave, soma in somas.items()
+        ]
+    ).sort_values("VALOR", ascending=True)
+
+    total = float(quadro["VALOR"].sum())
+    topo = quadro.tail(TOPO_FORNECEDOR)
+    # a fatia de cada um vai no hover: R$ sozinho não diz se é muito
+    topo = topo.assign(
+        FATIA=[(v / total if total else 0) for v in topo["VALOR"]]
+    )
+
+    fig = px.bar(
+        topo, x="VALOR", y="FORNECEDOR_N", orientation="h", text="VALOR",
+        custom_data=["FATIA"],
+    )
+    fig.update_traces(
+        texttemplate="R$ %{text:,.0f}",
+        textposition="outside",
+        cliponaxis=False,
+        marker_color=CORES_DV[1],
+        hovertemplate=(
+            "%{y}<br>R$ %{x:,.2f}<br>%{customdata[0]:.1%} do total"
+            "<extra></extra>"
+        ),
+    )
+    fig.update_xaxes(range=[0, float(topo["VALOR"].max()) * 1.22], title="")
+    fig.update_yaxes(title="")
+    st.plotly_chart(
+        estiliza(fig, max(300, 26 * len(topo) + 100)), use_container_width=True
+    )
+
+    fatia_topo = float(topo["VALOR"].sum()) / total if total else 0
+    st.caption(
+        f"{len(quadro)} fornecedor(es) no filtro atual, somando "
+        f"{fmt_brl(total)}. O gráfico mostra os {len(topo)} maiores, que são "
+        f"{fatia_topo:.0%} do valor pago. Grafias diferentes do mesmo nome "
+        "contam como um fornecedor só."
     )
 
 
