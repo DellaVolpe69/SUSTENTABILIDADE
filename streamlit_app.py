@@ -1622,8 +1622,8 @@ def salvar_consumo() -> None:
         "CO2": st.session_state.get("con_co2", 0.0),
         COL_AGUA_FATURAMENTO: ou_nulo(st.session_state.get("con_agua_faturamento")),
         COL_BANDEIRA: ou_nulo(st.session_state.get("con_bandeira")),
-        COL_REATIVO_KVAR: st.session_state.get("con_reativo_kvar", 0.0),
-        COL_REATIVO_VALOR: st.session_state.get("con_reativo_valor", 0.0),
+        COL_REATIVO_KVAR: valor_energia("con_reativo_kvar"),
+        COL_REATIVO_VALOR: valor_energia("con_reativo_valor"),
         COL_GERADA: valor_solar("con_gerada"),
         COL_INJETADA: valor_solar("con_injetada"),
         COL_CREDITO: valor_solar("con_credito"),
@@ -1703,51 +1703,63 @@ def form_consumos() -> None:
     # solar, e quem só lança a conta de luz não precisa passar por seis
     # campos vazios todo mês.
     with st.expander("Energia — bandeira, reativo e geração solar"):
-        # o que vale para toda filial, com ou sem placa
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.selectbox("BANDEIRA TARIFÁRIA", OPCOES_BANDEIRA,
-                         key="con_bandeira")
-        with c2:
-            st.number_input("REATIVO EXCEDENTE (kVAr)", min_value=0.0,
-                            step=0.01, format="%.2f", key="con_reativo_kvar")
-        with c3:
-            st.number_input("REATIVO EXCEDENTE (R$)", min_value=0.0, step=0.01,
-                            format="%.2f", key="con_reativo_valor")
-
-        # A pergunta é o roteiro do questionário: "Não → encerrar Setor
-        # Energético". Ela não vai para o banco — abrir três campos que
-        # não se aplicam é pior que esconder, porque campo vazio na tela
-        # parece pendência de preenchimento.
-        st.divider()
+        # A pergunta vem PRIMEIRO e sozinha. É o roteiro do questionário
+        # ("Não → encerrar Setor Energético") e ela decide o que a tela
+        # pede: mostrar os campos antes da resposta obriga a olhar seis
+        # campos para descobrir que três não se aplicam.
         esq, _resto = st.columns([1, 2])
         with esq:
             st.selectbox(
                 "A filial tem placa solar?", OPCOES_SIM_NAO,
+                index=None,
+                placeholder="Escolha para abrir os campos",
                 key="con_tem_solar",
                 help="Só muda o que a tela pede — não é gravado",
             )
 
-        if tem_placa_solar():
-            st.markdown("**Geração solar** — do site/app das placas")
-            s1, s2, s3 = st.columns(3)
-            with s1:
-                st.number_input("ENERGIA GERADA (kWh)", min_value=0.0,
-                                step=0.01, format="%.2f", key="con_gerada")
-            with s2:
-                st.number_input("ENERGIA INJETADA (kWh)", min_value=0.0,
-                                step=0.01, format="%.2f", key="con_injetada",
-                                help="Ou “consumo compensado” na fatura")
-            with s3:
-                st.number_input("CRÉDITO ACUMULADO (kWh)", min_value=0.0,
-                                step=0.01, format="%.2f", key="con_credito",
-                                help="Saldo para os próximos meses")
-        else:
-            st.info(
-                "**Sem placa solar** — geração, injeção e créditos não se "
-                "aplicam e vão **vazios** para o banco, não zerados. Zero "
-                "diria que a placa existe e não gerou nada no mês."
+        if resposta_solar() is None:
+            st.caption(
+                "Responda acima. Enquanto não responder, nada de energia é "
+                "gravado neste lançamento — nem bandeira, nem reativo."
             )
+        else:
+            st.divider()
+            # o que vale para toda filial, com ou sem placa
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.selectbox("BANDEIRA TARIFÁRIA", OPCOES_BANDEIRA,
+                             key="con_bandeira")
+            with c2:
+                st.number_input("REATIVO EXCEDENTE (kVAr)", min_value=0.0,
+                                step=0.01, format="%.2f",
+                                key="con_reativo_kvar")
+            with c3:
+                st.number_input("REATIVO EXCEDENTE (R$)", min_value=0.0,
+                                step=0.01, format="%.2f",
+                                key="con_reativo_valor")
+
+            if tem_placa_solar():
+                st.markdown("**Geração solar** — do site/app das placas")
+                s1, s2, s3 = st.columns(3)
+                with s1:
+                    st.number_input("ENERGIA GERADA (kWh)", min_value=0.0,
+                                    step=0.01, format="%.2f", key="con_gerada")
+                with s2:
+                    st.number_input("ENERGIA INJETADA (kWh)", min_value=0.0,
+                                    step=0.01, format="%.2f",
+                                    key="con_injetada",
+                                    help="Ou “consumo compensado” na fatura")
+                with s3:
+                    st.number_input("CRÉDITO ACUMULADO (kWh)", min_value=0.0,
+                                    step=0.01, format="%.2f",
+                                    key="con_credito",
+                                    help="Saldo para os próximos meses")
+            else:
+                st.info(
+                    "**Sem placa solar** — geração, injeção e créditos não "
+                    "se aplicam e vão **vazios** para o banco, não zerados. "
+                    "Zero diria que a placa existe e não gerou nada no mês."
+                )
 
     st.markdown("**Resíduos e demais** — só medição")
     c1, c2, c3 = st.columns(3)
@@ -2386,8 +2398,30 @@ OPCOES_SIM_NAO = ["Não", "Sim"]
 CAMPOS_SOLAR = ("con_gerada", "con_injetada", "con_credito")
 
 
+def resposta_solar():
+    """Sim, Não, ou None enquanto ninguém respondeu.
+
+    Três estados, não dois. O selectbox abre sem opção marcada — um
+    default nosso ("Não") seria resposta que o usuário não deu, e é
+    justamente essa resposta que decide quais campos a tela pede.
+    """
+    escolha = st.session_state.get("con_tem_solar")
+    return escolha if escolha in OPCOES_SIM_NAO else None
+
+
 def tem_placa_solar() -> bool:
-    return st.session_state.get("con_tem_solar") == "Sim"
+    return resposta_solar() == "Sim"
+
+
+def valor_energia(chave: str):
+    """Campo comum da fatura: NULL enquanto a pergunta não foi respondida.
+
+    Quem nem abriu o bloco não respondeu nada, e zero ali diria que a
+    conta trouxe zero de reativo — que é medição, não silêncio.
+    """
+    if resposta_solar() is None:
+        return None
+    return st.session_state.get(chave, 0.0)
 
 
 def valor_solar(chave: str):
