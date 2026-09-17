@@ -1558,6 +1558,9 @@ CAMPOS_CONSUMO = (
     "con_injetada",
     "con_credito",
 )
+# "con_tem_solar" fica FORA desta lista de propósito: é resposta de
+# roteiro, não campo do lançamento. Quem lança doze meses da mesma filial
+# responde uma vez, não doze.
 
 
 def competencia_consumo():
@@ -1621,9 +1624,9 @@ def salvar_consumo() -> None:
         COL_BANDEIRA: ou_nulo(st.session_state.get("con_bandeira")),
         COL_REATIVO_KVAR: st.session_state.get("con_reativo_kvar", 0.0),
         COL_REATIVO_VALOR: st.session_state.get("con_reativo_valor", 0.0),
-        COL_GERADA: st.session_state.get("con_gerada", 0.0),
-        COL_INJETADA: st.session_state.get("con_injetada", 0.0),
-        COL_CREDITO: st.session_state.get("con_credito", 0.0),
+        COL_GERADA: valor_solar("con_gerada"),
+        COL_INJETADA: valor_solar("con_injetada"),
+        COL_CREDITO: valor_solar("con_credito"),
     }
 
     # As linhas da outra tabela vão como apos_insert: se uma delas falhar,
@@ -1700,29 +1703,51 @@ def form_consumos() -> None:
     # solar, e quem só lança a conta de luz não precisa passar por seis
     # campos vazios todo mês.
     with st.expander("Energia — bandeira, reativo e geração solar"):
+        # o que vale para toda filial, com ou sem placa
         c1, c2, c3 = st.columns(3)
         with c1:
             st.selectbox("BANDEIRA TARIFÁRIA", OPCOES_BANDEIRA,
                          key="con_bandeira")
-            st.number_input("ENERGIA GERADA (kWh)", min_value=0.0, step=0.01,
-                            format="%.2f", key="con_gerada",
-                            help="Do site/app das placas solares")
         with c2:
             st.number_input("REATIVO EXCEDENTE (kVAr)", min_value=0.0,
                             step=0.01, format="%.2f", key="con_reativo_kvar")
-            st.number_input("ENERGIA INJETADA (kWh)", min_value=0.0, step=0.01,
-                            format="%.2f", key="con_injetada",
-                            help="Ou “consumo compensado” na fatura")
         with c3:
             st.number_input("REATIVO EXCEDENTE (R$)", min_value=0.0, step=0.01,
                             format="%.2f", key="con_reativo_valor")
-            st.number_input("CRÉDITO ACUMULADO (kWh)", min_value=0.0,
-                            step=0.01, format="%.2f", key="con_credito",
-                            help="Saldo para os próximos meses")
-        st.caption(
-            "Filial sem placa solar deixa os três de geração em zero — é "
-            "isso que a distingue de quem tem placa, não um campo à parte."
-        )
+
+        # A pergunta é o roteiro do questionário: "Não → encerrar Setor
+        # Energético". Ela não vai para o banco — abrir três campos que
+        # não se aplicam é pior que esconder, porque campo vazio na tela
+        # parece pendência de preenchimento.
+        st.divider()
+        esq, _resto = st.columns([1, 2])
+        with esq:
+            st.selectbox(
+                "A filial tem placa solar?", OPCOES_SIM_NAO,
+                key="con_tem_solar",
+                help="Só muda o que a tela pede — não é gravado",
+            )
+
+        if tem_placa_solar():
+            st.markdown("**Geração solar** — do site/app das placas")
+            s1, s2, s3 = st.columns(3)
+            with s1:
+                st.number_input("ENERGIA GERADA (kWh)", min_value=0.0,
+                                step=0.01, format="%.2f", key="con_gerada")
+            with s2:
+                st.number_input("ENERGIA INJETADA (kWh)", min_value=0.0,
+                                step=0.01, format="%.2f", key="con_injetada",
+                                help="Ou “consumo compensado” na fatura")
+            with s3:
+                st.number_input("CRÉDITO ACUMULADO (kWh)", min_value=0.0,
+                                step=0.01, format="%.2f", key="con_credito",
+                                help="Saldo para os próximos meses")
+        else:
+            st.info(
+                "**Sem placa solar** — geração, injeção e créditos não se "
+                "aplicam e vão **vazios** para o banco, não zerados. Zero "
+                "diria que a placa existe e não gerou nada no mês."
+            )
 
     st.markdown("**Resíduos e demais** — só medição")
     c1, c2, c3 = st.columns(3)
@@ -2351,6 +2376,31 @@ OPCOES_AGUA_FATURAMENTO = [SEM_RESPOSTA, "Fatura direta",
                            "Incluso no condomínio",
                            "Poço artesiano / sem fatura"]
 OPCOES_SITUACAO = ["Ativo", SITUACAO_NAO_APLICA]
+
+# "A filial tem placa solar?" — roteiro de tela, não dado. Não existe
+# coluna para isso e não vai existir: é atributo permanente da filial e
+# seria a mesma resposta repetida doze vezes por ano numa tabela mensal.
+# O que fica gravado é a consequência: filial com placa tem os campos de
+# geração preenchidos, filial sem placa tem os três nulos.
+OPCOES_SIM_NAO = ["Não", "Sim"]
+CAMPOS_SOLAR = ("con_gerada", "con_injetada", "con_credito")
+
+
+def tem_placa_solar() -> bool:
+    return st.session_state.get("con_tem_solar") == "Sim"
+
+
+def valor_solar(chave: str):
+    """O valor digitado, ou NULL quando a filial não tem placa.
+
+    Sem isto, quem digitasse a geração e depois respondesse "Não" gravaria
+    o número mesmo assim: o campo desaparece da tela, mas o session_state
+    guarda o que foi digitado. E nulo não é zero — zero diria que a placa
+    existe e não gerou nada no mês.
+    """
+    if not tem_placa_solar():
+        return None
+    return st.session_state.get(chave, 0.0)
 
 
 def ou_nulo(valor):
