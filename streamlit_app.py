@@ -749,9 +749,14 @@ def txt(chave: str) -> str:
 # Bucket seguindo o padrão dos que já existem (minúsculo com hífen).
 # create_bucket_if_not_exists() cria no primeiro upload.
 BUCKET_LICENCAS = "sustentabilidade-licencas"
+# Bucket separado, e não uma pasta no mesmo: o nome do objeto é "<id>_<n>",
+# e o id é da tabela. A licença 5 e a coleta 5 disputariam "5_1.pdf" — o
+# upload de uma sobrescreveria o anexo da outra, sem erro nenhum.
+BUCKET_RESIDUOS = "sustentabilidade-residuos"
 
 
-def subir_evidencia(id_registro, arquivo, sequencia: int = 1) -> str:
+def subir_evidencia(id_registro, arquivo, sequencia: int = 1,
+                    bucket: str = BUCKET_LICENCAS) -> str:
     """Sobe o anexo e devolve o nome do objeto.
 
     Nome no padrão <id>_<n>.<ext>, que é o que Modulos.Minio listar_anexos()
@@ -774,9 +779,9 @@ def subir_evidencia(id_registro, arquivo, sequencia: int = 1) -> str:
     objeto = f"{id_registro}_{sequencia}{extensao}"
     conteudo = arquivo.getvalue()
 
-    manager.create_bucket_if_not_exists(BUCKET_LICENCAS)
+    manager.create_bucket_if_not_exists(bucket)
     manager.client.put_object(
-        BUCKET_LICENCAS,
+        bucket,
         objeto,
         io.BytesIO(conteudo),
         length=len(conteudo),
@@ -785,7 +790,7 @@ def subir_evidencia(id_registro, arquivo, sequencia: int = 1) -> str:
     return objeto
 
 
-def excluir_evidencias(id_registro) -> int:
+def excluir_evidencias(id_registro, bucket: str = BUCKET_LICENCAS) -> int:
     """Remove do bucket os anexos <id>_* e devolve quantos saíram.
 
     Sem isso, excluir a licença deixa o arquivo órfão no MinIO: ninguém mais
@@ -797,7 +802,7 @@ def excluir_evidencias(id_registro) -> int:
 
     removidos = 0
     for obj in manager.client.list_objects(
-        BUCKET_LICENCAS, prefix=f"{id_registro}_", recursive=True
+        bucket, prefix=f"{id_registro}_", recursive=True
     ):
         manager.client.remove_object(BUCKET_LICENCAS, obj.object_name)
         removidos += 1
@@ -1614,6 +1619,7 @@ def salvar_consumo() -> None:
         "msg_consumos", "consumos", dados,
         CAMPOS_CONSUMO + campos_residuo(),
         apos_insert=grava_residuos,
+        apos_ok=esquece_medias,
     )
 
 
@@ -1682,6 +1688,164 @@ def form_consumos() -> None:
 
     st.button("💾 Salvar", key="btn_salvar_con", on_click=salvar_consumo, type="primary")
     render_msg("msg_consumos")
+
+    detalhe_coletas()
+
+
+# Identificam a linha e não se editam no detalhe: mudar filial, ano, mês ou
+# resíduo faria a coleta saltar de competência sem ninguém notar. Para isso
+# existe o painel Editar/Excluir, onde a troca é explícita.
+CAMPOS_IDENTIDADE = ("FILIAL", "ANO", "MES", "RESIDUO", "UNIDADE")
+
+# opção do filtro de mês que não filtra nada
+TODOS_OS_MESES = "Todos"
+
+
+def campos_coleta() -> list:
+    return [c for c in CAMPOS_EDICAO["residuos"]
+            if c["col"] not in CAMPOS_IDENTIDADE]
+
+
+def nova_coleta(registro: dict, chave_msg: str, chave_versao: str) -> None:
+    """Mais uma coleta do mesmo resíduo no mesmo mês, sem quantidade.
+
+    Copia só a identidade. A quantidade nasce zerada de propósito: quem
+    está desdobrando o mês em coletas vai repartir o total, e herdar o
+    número do irmão dobraria a soma do mês.
+    """
+    dados = {col: registro.get(col) for col in CAMPOS_IDENTIDADE}
+    dados["QUANTIDADE"] = 0.0
+    dados["USUARIO"] = usuario_email_logado
+    ok, msg, _nova = inserir("residuos", dados)
+    st.session_state[chave_msg] = (
+        ("success", "Coleta criada — preencha a quantidade e o MTR.")
+        if ok
+        else ("error", msg)
+    )
+    if ok:
+        esquece_medias("residuos")
+        st.session_state[chave_versao] = st.session_state.get(chave_versao, 0) + 1
+
+
+def rotulo_coleta(registro: dict) -> str:
+    """Título do expander: o que a pessoa procura sem abrir."""
+    quantidade = para_float(registro.get("QUANTIDADE"), 0.0) or 0.0
+    unidade = texto_celula(registro.get("UNIDADE")) or ""
+    mes = para_int(registro.get("MES"))
+    partes = [
+        texto_celula(registro.get("RESIDUO")) or "(sem resíduo)",
+        MESES[mes - 1] if 1 <= (mes or 0) <= 12 else "(sem mês)",
+        f"{fmt_num(quantidade)} {unidade}".strip(),
+    ]
+    mtr = texto_celula(registro.get("MTR"))
+    partes.append(f"MTR {mtr}" if mtr else "sem MTR")
+    return " · ".join(partes)
+
+
+def detalhe_coletas() -> None:
+    """Uma coleta por expander: MTR, fornecedor, valor e comprovante.
+
+    Fica na mesma página do formulário e fechado. Quem só lança a conta de
+    água nunca abre; quem precisa do MTR não troca de tela.
+
+    A competência tem filtro próprio porque o Salvar do formulário limpa os
+    campos — sem isso o detalhe perderia a filial justamente depois de
+    gravar, que é quando se vai preencher o MTR.
+    """
+    chave_msg = "msg_coletas"
+    chave_versao = "ver_coletas"
+    versao = st.session_state.setdefault(chave_versao, 0)
+
+    st.divider()
+    st.markdown("### Detalhe das coletas")
+    render_msg(chave_msg)
+
+    try:
+        df = listar_registros("residuos")
+    except Exception as erro:
+        st.error(f"Não foi possível ler {TABELAS_DB['residuos']}: {erro}")
+        return
+
+    if df.empty:
+        st.info(
+            "Nenhuma coleta registrada. Lance a quantidade em **Outros "
+            "resíduos**, acima, e ela aparece aqui para receber o MTR."
+        )
+        return
+
+    base = df.copy()
+    base["ANO_N"] = base["ANO"].map(para_int)
+    base["MES_N"] = base["MES"].map(para_int)
+
+    esq, meio, dir_ = st.columns(3)
+    with esq:
+        filiais = sorted({texto_celula(v) for v in base["FILIAL"]} - {""})
+        filial = st.selectbox("FILIAL", filiais, key=f"col_filial_{versao}")
+    with meio:
+        anos = sorted({a for a in base["ANO_N"] if a}, reverse=True)
+        ano = st.selectbox("ANO", anos, key=f"col_ano_{versao}")
+    with dir_:
+        mes_escolhido = st.selectbox(
+            "MÊS", [TODOS_OS_MESES] + MESES, key=f"col_mes_{versao}"
+        )
+
+    recorte = base[
+        (base["FILIAL"].map(texto_celula) == filial) & (base["ANO_N"] == ano)
+    ]
+    if mes_escolhido != TODOS_OS_MESES:
+        recorte = recorte[recorte["MES_N"] == MESES.index(mes_escolhido) + 1]
+
+    if recorte.empty:
+        st.info("Nenhuma coleta nesse recorte.")
+        return
+
+    st.caption(
+        f"{len(recorte)} coleta(s). Uma linha é **uma coleta**: o mês de um "
+        "resíduo é a soma das linhas dele, e é essa soma que vira a média "
+        "anual do PGRS."
+    )
+
+    for registro in [limpa_nulos(r) for r in recorte.to_dict("records")]:
+        id_registro = registro.get("id")
+        with st.expander(rotulo_coleta(registro)):
+            prefixo = f"col_{versao}_{id_registro}"
+            valores, caixas = {}, st.columns(3)
+            for posicao, spec in enumerate(campos_coleta()):
+                with caixas[posicao % 3]:
+                    valores[spec["col"]] = desenha_campo(spec, registro, prefixo)
+
+            mudancas = {
+                col: valor
+                for col, valor in valores.items()
+                if not mesma_coisa(registro.get(col), valor)
+            }
+
+            painel_evidencia(
+                id_registro, versao, "residuos", BUCKET_RESIDUOS,
+                dentro_de_expander=True,
+            )
+
+            if mudancas:
+                st.caption("Alterado aqui: " + ", ".join(sorted(mudancas)))
+            botao_salvar, botao_nova, _sobra = st.columns([1, 1, 2])
+            with botao_salvar:
+                st.button(
+                    "💾 Salvar coleta",
+                    key=f"btn_col_salvar_{versao}_{id_registro}",
+                    disabled=not mudancas,
+                    type="primary",
+                    on_click=salvar_edicao,
+                    args=("residuos", id_registro, registro, mudancas,
+                          chave_msg, chave_versao),
+                )
+            with botao_nova:
+                st.button(
+                    "➕ Adicionar coleta",
+                    key=f"btn_col_nova_{versao}_{id_registro}",
+                    help="Outra coleta do mesmo resíduo neste mês",
+                    on_click=nova_coleta,
+                    args=(registro, chave_msg, chave_versao),
+                )
 
 
 # ================================================
@@ -2604,6 +2768,7 @@ def salvar_edicao(tabela_app, id_registro, registro, mudancas, chave_msg, chave_
         st.session_state[chave_msg] = ("error", f"Não alterou: {erro}")
         return
     esquece_saldo(tabela_app)
+    esquece_medias(tabela_app)
     campos = ", ".join(sorted(mudancas))
     st.session_state[chave_msg] = ("success", f"Registro #{id_registro} atualizado ({campos}).")
     st.session_state[chave_versao] = st.session_state.get(chave_versao, 0) + 1
@@ -2628,7 +2793,7 @@ def confirmar_exclusao(tabela_app, id_registro, chave_conf, chave_msg, chave_ver
     aviso = ""
     # anexos só saem depois que a linha some, para não perder o arquivo de um
     # registro que continuou no banco
-    if tabela_app == "licencas":
+    if tabela_app in CATEGORIA_DA_TELA:
         try:
             removidos = excluir_evidencias(id_registro)
             aviso = f" {removidos} anexo(s) removido(s) do MinIO."
@@ -2805,8 +2970,11 @@ def painel_edicao(tabela_app: str, limite: int = LIMITE_REGISTROS) -> None:
         if not mesma_coisa(registro.get(col), valor)
     }
 
-    if tabela_app == "licencas":
-        painel_evidencia(id_registro, versao)
+    # As duas telas de licença compartilham o formulário, então as duas
+    # sobem anexo. Só Licenças mostrava o painel: o que era gravado em
+    # Ambiental ia para o bucket e não tinha como ser baixado de volta.
+    if tabela_app in CATEGORIA_DA_TELA:
+        painel_evidencia(id_registro, versao, tabela_app)
 
     st.divider()
     if mudancas:
@@ -2854,15 +3022,16 @@ def painel_edicao(tabela_app: str, limite: int = LIMITE_REGISTROS) -> None:
 # ------------------------------------------------
 # Evidência da licença (ver e substituir)
 # ------------------------------------------------
-def substituir_evidencia(id_registro, chave_upload, chave_msg, chave_versao) -> None:
+def substituir_evidencia(id_registro, chave_upload, chave_msg, chave_versao,
+                         bucket: str = BUCKET_LICENCAS) -> None:
     arquivo = st.session_state.get(chave_upload)
     if arquivo is None:
         st.session_state[chave_msg] = ("warning", "Escolha o novo arquivo antes de substituir.")
         return
     try:
         # apaga os antigos primeiro: a extensão pode mudar e sobrariam dois
-        excluir_evidencias(id_registro)
-        objeto = subir_evidencia(id_registro, arquivo)
+        excluir_evidencias(id_registro, bucket)
+        objeto = subir_evidencia(id_registro, arquivo, bucket=bucket)
     except Exception as erro:
         st.session_state[chave_msg] = ("error", f"Não substituiu: {erro}")
         return
@@ -2870,7 +3039,14 @@ def substituir_evidencia(id_registro, chave_upload, chave_msg, chave_versao) -> 
     st.session_state[chave_versao] = st.session_state.get(chave_versao, 0) + 1
 
 
-def painel_evidencia(id_registro, versao) -> None:
+def painel_evidencia(id_registro, versao, tabela_app: str = "licencas",
+                     bucket: str = BUCKET_LICENCAS,
+                     dentro_de_expander: bool = False) -> None:
+    """Lista os anexos daquele registro e dá o link de download.
+
+    É o ÚNICO lugar do app onde se baixa o que está no MinIO: o bucket não
+    é público e o link é gerado na hora, com validade de 1 hora.
+    """
     st.markdown("**Evidência no MinIO**")
     manager = getattr(meu_minio, "manager", None)
     if manager is None:
@@ -2880,7 +3056,7 @@ def painel_evidencia(id_registro, versao) -> None:
     try:
         objetos = list(
             manager.client.list_objects(
-                BUCKET_LICENCAS, prefix=f"{id_registro}_", recursive=True
+                bucket, prefix=f"{id_registro}_", recursive=True
             )
         )
     except Exception as erro:
@@ -2896,14 +3072,19 @@ def painel_evidencia(id_registro, versao) -> None:
         with dir_:
             try:
                 url = manager.generate_presigned_download_url(
-                    BUCKET_LICENCAS, obj.object_name, expires_hours=1
+                    bucket, obj.object_name, expires_hours=1
                 )
                 st.link_button("Abrir", url)
             except Exception as erro:
                 st.caption(f"sem link ({erro})")
 
-    with st.expander("Substituir evidência"):
-        chave_upload = f"sub_evid_{id_registro}_{versao}"
+    # Streamlit não aceita expander dentro de expander: quando este painel
+    # é chamado de dentro de um, o upload vai solto no container.
+    caixa = st.container() if dentro_de_expander else st.expander("Anexar / substituir")
+    with caixa:
+        if dentro_de_expander:
+            st.markdown("**Anexar / substituir**")
+        chave_upload = f"sub_evid_{tabela_app}_{id_registro}_{versao}"
         st.file_uploader(
             "Novo arquivo",
             type=TIPOS_EVIDENCIA,
@@ -2917,8 +3098,9 @@ def painel_evidencia(id_registro, versao) -> None:
             args=(
                 id_registro,
                 chave_upload,
-                f"msg_edicao_licencas",
-                f"ver_licencas",
+                f"msg_edicao_{tabela_app}",
+                f"ver_{tabela_app}",
+                bucket,
             ),
         )
 
@@ -3042,6 +3224,25 @@ def medias_em_linha(codigo_filial: str, ano: int) -> dict:
             para_float(linha.get("QUANTIDADE"), 0.0) or 0.0
         )
     return {chave: soma / 12 for chave, soma in somas.items()}
+
+
+TABELAS_DA_MEDIA = ("consumos", "residuos")
+
+
+def esquece_medias(tabela_app: str = "") -> None:
+    """Descarta a média anual em cache. Chamar depois de mexer na medição.
+
+    O PGRS mostra a média calculada na hora. Com cache de 5 min e sem isto,
+    corrigir uma quantidade não mudava o documento — e quem corrigiu
+    concluiria que a edição não pegou, como aconteceu com o saldo dos
+    recicláveis.
+    """
+    if tabela_app and tabela_app not in TABELAS_DA_MEDIA:
+        return
+    for funcao in (medias_do_ano, medias_em_linha):
+        limpar = getattr(funcao, "clear", None)
+        if callable(limpar):
+            limpar()
 
 
 def media_anual_calculada(residuo, codigo_filial: str, ano: int):
