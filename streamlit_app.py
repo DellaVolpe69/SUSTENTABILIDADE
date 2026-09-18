@@ -1614,8 +1614,10 @@ def salvar_consumo() -> None:
         COL_AGUA_VALOR: valor_se(pede_agua_valor(), "con_agua_valor"),
         COL_ESGOTO: valor_se(pede_esgoto(), "con_esgoto"),
         COL_ESGOTO_VALOR: valor_se(pede_esgoto(), "con_esgoto_valor"),
-        "ENERGIA": st.session_state.get("con_energia", 0.0),
-        COL_ENERGIA_VALOR: st.session_state.get("con_energia_valor", 0.0),
+        # agora que estão dentro do bloco, valem a mesma regra: campo que
+        # não esteve na tela não vira zero no banco
+        "ENERGIA": valor_energia("con_energia"),
+        COL_ENERGIA_VALOR: valor_energia("con_energia_valor"),
         "COMUM": st.session_state.get("con_comum", 0.0),
         "MADEIRA": st.session_state.get("con_madeira", 0.0),
         "RECICLAVEIS": st.session_state.get("con_reciclaveis", 0.0),
@@ -1679,16 +1681,6 @@ def form_consumos() -> None:
     # De onde vem a água, antes dos números dela: é esta resposta que
     # explica um m³ vazio — condomínio sem hidrômetro individual não tem
     # volume para informar, e isso não é falta de preenchimento.
-    # Energia toda filial tem, e sempre da mesma forma: fica fora do
-    # roteiro condicional.
-    st.markdown("**Energia** — medição e valor da conta")
-    med, val = st.columns(2)
-    with med:
-        st.number_input("ENERGIA (kWh)", min_value=0.0, step=0.01,
-                        format="%.2f", key="con_energia")
-    with val:
-        st.number_input("ENERGIA (R$)", min_value=0.0, step=0.01,
-                        format="%.2f", key="con_energia_valor")
 
     # Água tem três caminhos, e eles pedem campos diferentes. A pergunta
     # vem primeiro pelo mesmo motivo da placa solar: campo que não se
@@ -1758,67 +1750,65 @@ def form_consumos() -> None:
                     "e não é informada à parte."
                 )
 
-    # Num expander porque é a exceção: a maioria das filiais não tem placa
-    # solar, e quem só lança a conta de luz não precisa passar por seis
-    # campos vazios todo mês.
-    with st.expander("Energia — bandeira, reativo e geração solar"):
-        # A pergunta vem PRIMEIRO e sozinha. É o roteiro do questionário
-        # ("Não → encerrar Setor Energético") e ela decide o que a tela
-        # pede: mostrar os campos antes da resposta obriga a olhar seis
-        # campos para descobrir que três não se aplicam.
-        esq, _resto = st.columns([1, 2])
-        with esq:
-            st.selectbox(
-                "A filial tem placa solar?", OPCOES_SIM_NAO,
-                index=None,
-                placeholder="Escolha para abrir os campos",
-                key="con_tem_solar",
-                help="Só muda o que a tela pede — não é gravado",
-            )
+    # Energia num bloco só, com a pergunta na frente — mesmo formato do
+    # bloco de água, que também tem caminhos. Deixou de ser expander: com
+    # o consumo e o valor da conta aqui dentro, um bloco fechado esconderia
+    # campo que toda filial preenche.
+    st.markdown("**Energia**")
+    esq, _resto = st.columns([1, 2])
+    with esq:
+        st.selectbox(
+            "A filial tem placa solar?", OPCOES_SIM_NAO,
+            index=None,
+            placeholder="Escolha para abrir os campos",
+            key="con_tem_solar",
+            help="Só muda o que a tela pede — não é gravado",
+        )
 
-        if resposta_solar() is None:
-            st.caption(
-                "Responda acima. Enquanto não responder, nada de energia é "
-                "gravado neste lançamento — nem bandeira, nem reativo."
-            )
+    if resposta_solar() is None:
+        st.caption(
+            "Responda acima. Enquanto não responder, nada de energia é "
+            "gravado neste lançamento — nem o consumo, nem a conta."
+        )
+    else:
+        # o que vale para toda filial, com ou sem placa
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.number_input("ENERGIA (kWh)", min_value=0.0, step=0.01,
+                            format="%.2f", key="con_energia")
+            st.number_input("REATIVO EXCEDENTE (kVAr)", min_value=0.0,
+                            step=0.01, format="%.2f", key="con_reativo_kvar")
+        with c2:
+            st.number_input("ENERGIA (R$)", min_value=0.0, step=0.01,
+                            format="%.2f", key="con_energia_valor")
+            st.number_input("REATIVO EXCEDENTE (R$)", min_value=0.0,
+                            step=0.01, format="%.2f", key="con_reativo_valor")
+        with c3:
+            st.selectbox("BANDEIRA TARIFÁRIA", OPCOES_BANDEIRA,
+                         key="con_bandeira")
+
+        if tem_placa_solar():
+            st.markdown("**Geração solar** — do site/app das placas")
+            s1, s2, s3 = st.columns(3)
+            with s1:
+                st.number_input("ENERGIA GERADA (kWh)", min_value=0.0,
+                                step=0.01, format="%.2f", key="con_gerada")
+            with s2:
+                st.number_input("ENERGIA INJETADA (kWh)", min_value=0.0,
+                                step=0.01, format="%.2f",
+                                key="con_injetada",
+                                help="Ou “consumo compensado” na fatura")
+            with s3:
+                st.number_input("CRÉDITO ACUMULADO (kWh)", min_value=0.0,
+                                step=0.01, format="%.2f",
+                                key="con_credito",
+                                help="Saldo para os próximos meses")
         else:
-            st.divider()
-            # o que vale para toda filial, com ou sem placa
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                st.selectbox("BANDEIRA TARIFÁRIA", OPCOES_BANDEIRA,
-                             key="con_bandeira")
-            with c2:
-                st.number_input("REATIVO EXCEDENTE (kVAr)", min_value=0.0,
-                                step=0.01, format="%.2f",
-                                key="con_reativo_kvar")
-            with c3:
-                st.number_input("REATIVO EXCEDENTE (R$)", min_value=0.0,
-                                step=0.01, format="%.2f",
-                                key="con_reativo_valor")
-
-            if tem_placa_solar():
-                st.markdown("**Geração solar** — do site/app das placas")
-                s1, s2, s3 = st.columns(3)
-                with s1:
-                    st.number_input("ENERGIA GERADA (kWh)", min_value=0.0,
-                                    step=0.01, format="%.2f", key="con_gerada")
-                with s2:
-                    st.number_input("ENERGIA INJETADA (kWh)", min_value=0.0,
-                                    step=0.01, format="%.2f",
-                                    key="con_injetada",
-                                    help="Ou “consumo compensado” na fatura")
-                with s3:
-                    st.number_input("CRÉDITO ACUMULADO (kWh)", min_value=0.0,
-                                    step=0.01, format="%.2f",
-                                    key="con_credito",
-                                    help="Saldo para os próximos meses")
-            else:
-                st.info(
-                    "**Sem placa solar** — geração, injeção e créditos não "
-                    "se aplicam e vão **vazios** para o banco, não zerados. "
-                    "Zero diria que a placa existe e não gerou nada no mês."
-                )
+            st.info(
+                "**Sem placa solar** — geração, injeção e créditos não se "
+                "aplicam e vão **vazios** para o banco, não zerados. Zero "
+                "diria que a placa existe e não gerou nada no mês."
+            )
 
     st.markdown("**Resíduos e demais** — só medição")
     c1, c2, c3 = st.columns(3)
