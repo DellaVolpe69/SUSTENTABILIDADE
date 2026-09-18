@@ -605,7 +605,13 @@ def perfil_acesso(email: str) -> dict:
 
 
 def filiais_cadastradas() -> list:
-    """Lista mestra de filiais: a coluna FILIAL da tabela de usuários."""
+    """Lista mestra de filiais: a coluna FILIAL da tabela de usuários.
+
+    Entram TODAS as linhas, inclusive as das filiais desativadas, que
+    existem na tabela sem usuário para o histórico e para o PGRS dos anos
+    em que operaram. Consequência assumida: elas continuam sendo
+    oferecidas nos formulários.
+    """
     try:
         df = carregar_usuarios()
     except Exception:
@@ -5159,6 +5165,24 @@ RESUMOS_RELATORIO = {
 }
 
 
+def fmt_curto_unidade(valor: float, unidade: str) -> str:
+    """Valor encurtado para caber como rótulo, na unidade do serviço.
+
+    O fmt_curto nasceu para recicláveis, que é sempre R$. Consumos tem
+    kg, L, m³, kWh e t — e um rótulo "R$ 3,1 mil" numa linha de energia
+    seria a volta do defeito que a gente passou uma semana consertando.
+    """
+    if unidade == "R$":
+        return fmt_curto(valor)
+    if abs(valor) >= 1_000_000:
+        numero = f"{valor / 1_000_000:,.1f}".replace(".", ",")
+        return f"{numero} mi {unidade}"
+    if abs(valor) >= 1_000:
+        numero = f"{valor / 1_000:,.1f}".replace(".", ",")
+        return f"{numero} mil {unidade}"
+    return f"{valor:,.0f} {unidade}".replace(",", ".")
+
+
 def fmt_curto(valor: float) -> str:
     """Valor encurtado para caber como rótulo dentro do gráfico.
 
@@ -6176,24 +6200,78 @@ def analise_consumos(df: pd.DataFrame) -> None:
     st.divider()
     st.markdown(f"**{escolha} por mês**")
     grafico = serie.copy()
+    # as mesmas duas contas do gráfico de recicláveis: o ano anterior
+    # PRESENTE na série (não `ano - 1`, que some quando o filtro salteia
+    # anos) e o mês imediatamente anterior no calendário
+    grafico = variacao_ano_a_ano(grafico, "VALOR")
+    grafico = variacao_mes_a_mes(grafico, "VALOR")
     grafico["MES_NOME"] = grafico["MES_N"].map(lambda m: MESES[int(m) - 1])
     grafico["ANO"] = grafico["ANO_N"].astype(str)
+
+    # Rótulo em todos os anos. Aqui a seta é o contrário de recicláveis:
+    # consumir mais é resultado ruim, e a legenda diz isso — o ▲ sozinho
+    # não carrega julgamento.
+    grafico["TEXTO"] = [
+        fmt_curto_unidade(v, unidade)
+        + ("<br>" + seta_variacao(d) if pd.notna(d) else "")
+        for v, d in zip(grafico["VALOR"], grafico["VARIACAO"])
+    ]
+    grafico["VAR_TXT"] = [
+        (
+            f"{seta_variacao(d)} vs. {int(b)}"
+            if pd.notna(d)
+            else (
+                f"sem o mesmo mês em {int(b)} para comparar"
+                if pd.notna(b)
+                else "primeiro ano da série: nada para comparar"
+            )
+        )
+        for d, b in zip(grafico["VARIACAO"], grafico["ANO_BASE"])
+    ]
+    grafico["VAR_MES_TXT"] = [
+        (
+            f"{seta_variacao(d)} vs. {MESES[(int(m) - 2) % 12]}"
+            if pd.notna(d)
+            else "sem o mês anterior para comparar"
+        )
+        for d, m in zip(grafico["VARIACAO_MES"], grafico["MES_N"])
+    ]
 
     fig = px.line(
         grafico.sort_values(["ANO_N", "MES_N"]),
         x="MES_NOME", y="VALOR", color="ANO", markers=True,
+        text="TEXTO",
         category_orders={"MES_NOME": MESES},
+        custom_data=["VAR_TXT", "VAR_MES_TXT"],
     )
     sufixo = "" if unidade == "R$" else " " + unidade
     prefixo = "R$ " if unidade == "R$" else ""
     fig.update_traces(
+        texttemplate="%{text}",
+        cliponaxis=False,
+        textfont_size=9,
         hovertemplate="%{x}<br>" + prefixo + "%{y:,.2f}" + sufixo
-        + "<extra>%{fullData.name}</extra>"
+        + "<br>mês a mês: %{customdata[1]}"
+        + "<br>ano a ano: %{customdata[0]}"
+        + "<extra>%{fullData.name}</extra>",
     )
-    st.plotly_chart(estiliza(fig, 380), use_container_width=True)
+    # o lado do rótulo alterna por ano: com todos em cima, dois anos de
+    # valor parecido escrevem um sobre o outro
+    for posicao, traco in enumerate(fig.data):
+        traco.textposition = "top center" if posicao % 2 == 0 else "bottom center"
+    fig.update_yaxes(range=[0, float(grafico["VALOR"].max()) * 1.30])
+    st.plotly_chart(estiliza(fig, 460), use_container_width=True)
+
+    comparaveis = int(grafico["VARIACAO"].notna().sum())
+    anos_na_tela = sorted(grafico["ANO"].unique())
     st.caption(
-        "Cada linha é um ano. A inclinação mostra o mês contra o anterior; "
-        "a distância entre as linhas, o mesmo mês contra o ano passado."
+        f"Cada linha é um ano ({', '.join(anos_na_tela)}). Cada ponto traz o "
+        "valor e, abaixo, a variação contra o mesmo mês do **ano anterior "
+        "que está no gráfico**. **▲ é consumo maior** — aqui subir é "
+        f"resultado ruim, ao contrário da receita. {comparaveis} de "
+        f"{len(grafico)} mês(es) têm par para comparar; nos demais a "
+        "variação fica em branco em vez de virar 100%. Passe o mouse para "
+        "ver também a comparação com o mês anterior."
     )
 
 
