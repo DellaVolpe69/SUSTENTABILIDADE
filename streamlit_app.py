@@ -6212,6 +6212,185 @@ CORES_STATUS = {
 SEM_STATUS = "(sem status)"
 
 
+# Severidade, para escolher o pior status de uma célula do mapa: uma
+# filial pode ter duas licenças do mesmo tipo, e o que importa é a pior.
+SEVERIDADE = {
+    "NÃO SE APLICA": 0,
+    SEM_STATUS: 1,
+    "NO PRAZO": 2,
+    "RENOVAR": 3,
+    "VENCIDO": 4,
+}
+JANELA_RENOVAR = 30
+TOPO_MAPA = 12
+
+
+def com_vencimento(base: pd.DataFrame) -> pd.DataFrame:
+    """Acrescenta VENCIMENTO e ATRASO (dias, positivo = no passado).
+
+    Uma função só porque três blocos precisam da mesma conta, e três
+    cópias divergiriam no primeiro ajuste. DT_VENCIMENTO é text no banco,
+    então parte não vira data: essas ficam com ATRASO nulo, e quem usa
+    conta quantas ficaram de fora.
+    """
+    quadro = base.copy()
+    if COL_DT_VENCIMENTO not in quadro.columns:
+        quadro["VENCIMENTO"] = None
+        quadro["ATRASO"] = None
+        return quadro
+    hoje = date.today()
+    quadro["VENCIMENTO"] = quadro[COL_DT_VENCIMENTO].map(para_data)
+    quadro["ATRASO"] = quadro["VENCIMENTO"].map(
+        lambda d: (hoje - d).days if d else None
+    )
+    return quadro
+
+
+def cartoes_conformidade(quadro: pd.DataFrame) -> None:
+    """Quatro números: conformidade, vencidas, a vencer e o pior atraso."""
+    aplicaveis = quadro[quadro["STATUS_N"] != "NÃO SE APLICA"]
+    vencidas = aplicaveis[aplicaveis["STATUS_N"] == "VENCIDO"]
+    no_prazo = aplicaveis[aplicaveis["STATUS_N"] == "NO PRAZO"]
+
+    cartoes = []
+    if len(aplicaveis):
+        taxa = len(no_prazo) / len(aplicaveis)
+        cartoes.append((
+            "Em conformidade", f"{taxa:.0%}",
+            "verde" if taxa >= 0.9 else "laranja",
+            f"{len(no_prazo)} de {len(aplicaveis)} · sem contar "
+            "“não se aplica”",
+        ))
+        cartoes.append((
+            "Vencidas", f"{len(vencidas)}",
+            "vermelho" if len(vencidas) else "verde",
+            f"{len(vencidas) / len(aplicaveis):.0%} das aplicáveis",
+        ))
+
+    # a vencer usa a DATA, não o STATUS: o status é uma foto do dia em que
+    # a trigger rodou, e "vence em 30 dias" muda sozinho com o calendário
+    a_vencer = quadro["ATRASO"].map(
+        lambda v: pd.notna(v) and -JANELA_RENOVAR <= v < 0
+    )
+    cartoes.append((
+        f"Vencem em {JANELA_RENOVAR} dias", f"{int(a_vencer.sum())}",
+        "laranja" if a_vencer.sum() else "verde",
+        "contado da data, não do status",
+    ))
+
+    atrasadas = quadro[quadro["ATRASO"].map(lambda v: pd.notna(v) and v > 0)]
+    if not atrasadas.empty:
+        pior = atrasadas.loc[atrasadas["ATRASO"].idxmax()]
+        cartoes.append((
+            "Maior atraso", f"{int(pior['ATRASO'])} dias", "vermelho",
+            f"{texto_celula(pior.get('LICENCA')) or '(sem nome)'} · "
+            f"{texto_celula(pior.get('FILIAL_N'))}",
+        ))
+
+    linha_cartoes(cartoes)
+
+
+def escala_discreta(cores: list) -> list:
+    """Colorscale em faixas, uma por categoria, sem degradê entre elas."""
+    passos, total = [], len(cores)
+    for i, cor in enumerate(cores):
+        passos.append([i / total, cor])
+        passos.append([(i + 1) / total, cor])
+    return passos
+
+
+def mapa_filial_licenca(base: pd.DataFrame) -> None:
+    """Filial × licença, pintado pelo pior status de cada cruzamento.
+
+    Só as filiais com pendência, da mais crítica para a menos: com 43
+    filiais quase todas verdes, o mapa inteiro esconderia as 8 que
+    precisam de ação.
+
+    As colunas são os NOMES das licenças, não tipos — o banco não tem
+    coluna de tipo. Por isso entram as mais frequentes, e a legenda diz
+    quantas ficaram fora.
+    """
+    if "LICENCA" not in base.columns:
+        return
+
+    quadro = base.copy()
+    quadro["LICENCA_N"] = quadro["LICENCA"].map(
+        lambda v: texto_celula(v) or "(sem nome)"
+    )
+    quadro["PESO"] = quadro["STATUS_N"].map(lambda s: SEVERIDADE.get(s, 1))
+
+    # as licenças mais usadas viram colunas; as demais ficam de fora
+    frequencia = quadro["LICENCA_N"].value_counts()
+    colunas = list(frequencia.head(TOPO_MAPA).index)
+    fora = len(frequencia) - len(colunas)
+    recorte = quadro[quadro["LICENCA_N"].isin(colunas)]
+
+    # pior status de cada cruzamento
+    matriz = recorte.pivot_table(
+        index="FILIAL_N", columns="LICENCA_N", values="PESO", aggfunc="max"
+    )
+    if matriz.empty:
+        return
+
+    # só filiais com pendência, a mais crítica no topo
+    problema = matriz.max(axis=1) >= SEVERIDADE["RENOVAR"]
+    matriz = matriz[problema]
+    if matriz.empty:
+        st.success("Nenhuma filial com licença vencida ou a renovar. 👏")
+        return
+    matriz = matriz.loc[
+        matriz.sum(axis=1).sort_values(ascending=False).index
+    ]
+    matriz = matriz.reindex(columns=colunas)
+
+    st.divider()
+    st.markdown("**Filial × licença** — só filiais com pendência")
+
+    ordem = sorted(SEVERIDADE, key=SEVERIDADE.get)
+    rotulos = matriz.map(
+        lambda v: "" if pd.isna(v) else {
+            SEVERIDADE["VENCIDO"]: "Vencido",
+            SEVERIDADE["RENOVAR"]: "Renovar",
+        }.get(int(v), "")
+    )
+
+    fig = px.imshow(
+        matriz,
+        color_continuous_scale=escala_discreta(
+            [CORES_STATUS.get(s, "#C9DACE") for s in ordem]
+        ),
+        zmin=-0.5,
+        zmax=len(ordem) - 0.5,
+        aspect="auto",
+    )
+    fig.update_traces(
+        text=rotulos.to_numpy(),
+        texttemplate="%{text}",
+        textfont_size=10,
+        hovertemplate="%{y}<br>%{x}<extra></extra>",
+    )
+    fig.update_xaxes(side="top", title="")
+    fig.update_yaxes(title="")
+    fig.update_layout(coloraxis_showscale=False)
+    altura = max(260, 34 * len(matriz) + 140)
+    st.plotly_chart(estiliza(fig, altura), use_container_width=True)
+
+    legenda = " · ".join(
+        f"<span style='color:{CORES_STATUS[s]}'>■</span> {s.capitalize()}"
+        for s in ("NO PRAZO", "RENOVAR", "VENCIDO", "NÃO SE APLICA")
+    )
+    st.markdown(legenda, unsafe_allow_html=True)
+    recado = (
+        f"{len(matriz)} filial(is) com pendência, da mais crítica para a "
+        "menos. Célula vazia é cruzamento que não existe no cadastro."
+    )
+    if fora:
+        recado += (
+            f" {fora} licença(s) menos frequentes ficaram fora das colunas."
+        )
+    st.caption(recado)
+
+
 def analise_licencas(df: pd.DataFrame) -> None:
     if not TEM_PLOTLY:
         aviso_sem_plotly()
@@ -6228,6 +6407,18 @@ def analise_licencas(df: pd.DataFrame) -> None:
     )
     base["FILIAL_N"] = base["FILIAL"].map(lambda v: texto_celula(v) or "(sem filial)")
 
+    quadro = com_vencimento(base)
+    cartoes_conformidade(quadro)
+    ilegiveis = int(quadro["VENCIMENTO"].isna().sum())
+    if ilegiveis:
+        st.caption(
+            f"{ilegiveis} de {len(quadro)} licença(s) estão com "
+            f"**{COL_DT_VENCIMENTO} ilegível** — a coluna é texto no banco. "
+            "Elas contam nos cartões de status, mas ficam fora de tudo que "
+            "depende de data."
+        )
+
+    st.divider()
     contagem = (
         base.groupby(["FILIAL_N", "STATUS_N"]).size().reset_index(name="QTD")
     )
@@ -6275,6 +6466,7 @@ def analise_licencas(df: pd.DataFrame) -> None:
         "total da filial."
     )
 
+    mapa_filial_licenca(base)
     grafico_atrasos(base)
 
 
@@ -6298,13 +6490,7 @@ def grafico_atrasos(base: pd.DataFrame) -> None:
         st.info(f"Falta a coluna {COL_DT_VENCIMENTO} para calcular o atraso.")
         return
 
-    hoje = date.today()
-    quadro = base.copy()
-    quadro["VENCIMENTO"] = quadro[COL_DT_VENCIMENTO].map(para_data)
-    quadro["ATRASO"] = quadro["VENCIMENTO"].map(
-        lambda d: (hoje - d).days if d else None
-    )
-
+    quadro = com_vencimento(base)
     ilegivel = quadro[quadro["VENCIMENTO"].isna()]
     atrasadas = quadro[quadro["ATRASO"].map(lambda v: pd.notna(v) and v > 0)]
 
