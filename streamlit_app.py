@@ -6368,11 +6368,21 @@ def mapa_filial_licenca(base: pd.DataFrame) -> None:
         texttemplate="%{text}",
         textfont_size=10,
         hovertemplate="%{y}<br>%{x}<extra></extra>",
+        # A grade é o que faz o mapa ser lido célula por célula. Sem os
+        # gaps, células vizinhas da mesma cor viram um bloco só e não se
+        # distingue "três licenças no prazo" de "uma faixa verde".
+        # O Heatmap não tem borda por célula; o vão é o separador, e ele
+        # mostra o fundo da página — daí a impressão de linha branca.
+        xgap=3,
+        ygap=3,
     )
-    fig.update_xaxes(side="top", title="")
-    fig.update_yaxes(title="")
+    # automargin: os nomes das licenças são longos e ficam em pé no topo.
+    # Deixar o Plotly medir o espaço evita rótulo cortado quando a lista
+    # muda de tamanho — margem fixa serviria só para o cadastro de hoje.
+    fig.update_xaxes(side="top", title="", tickangle=-45, automargin=True)
+    fig.update_yaxes(title="", automargin=True)
     fig.update_layout(coloraxis_showscale=False)
-    altura = max(260, 34 * len(matriz) + 140)
+    altura = max(320, 36 * len(matriz) + 200)
     st.plotly_chart(estiliza(fig, altura), use_container_width=True)
 
     legenda = " · ".join(
