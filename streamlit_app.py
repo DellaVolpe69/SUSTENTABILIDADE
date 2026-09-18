@@ -2417,6 +2417,7 @@ def form_licencas(tela: str = "licencas") -> None:
 # ================================================
 CAMPOS_CUSTO = (
     "cus_fornecedor",
+    "cus_fornecedor_novo",
     "cus_filial",
     "cus_nota",
     "cus_pedido",
@@ -2565,12 +2566,186 @@ OPCOES_BENEFICIARIO = ["Diretoria", "Filial"]
 RATEIO_DIRETORIA = 0.5
 
 
+# A tabela de/para do controle ambiental: nome -> BP. Fica fora de
+# TABELAS_DB porque não é tela de CRUD — é lista de apoio, e o app só lê
+# dela (e acrescenta pelo caminho do fornecedor novo).
+TABELA_FORNECEDOR_BP = "SUSTENTABILIDADE_FORNECEDOR_BP"
+
+
+ORIGEM_DEPARA = "de/para"
+ORIGEM_HISTORICO = "histórico"
+
+
+def le_tabela(nome_tabela: str, colunas: str, limite: int = LIMITE_REGISTROS):
+    """Linhas de uma tabela, ou lista vazia se não der para ler.
+
+    Sem isto, cada origem do catálogo precisaria do seu try/except e a
+    falha de uma derrubaria as outras — que é o oposto do que um
+    coalesce deve fazer.
+    """
+    try:
+        cliente = conectar_supabase()
+        resposta = (
+            cliente.table(nome_tabela).select(colunas).limit(limite).execute()
+        )
+        return getattr(resposta, "data", None) or []
+    except Exception:
+        return []
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fornecedores_conhecidos() -> dict:
+    """chave do nome -> {NOME, BP, ORIGEM}, de duas origens.
+
+    É um coalesce em dois eixos:
+
+    NOMES — união das duas origens, agrupada pelo nome normalizado, para
+    "ESTRE" e "Estre " não virarem duas opções. Vale a grafia do de/para
+    quando ele conhece o fornecedor; senão, a mais usada no histórico.
+
+    BP — o do de/para vence, porque é lista curada; faltando ele, o mais
+    frequente no histórico. Fornecedor conhecido sem BP em nenhuma das
+    duas fica com BP vazio, e a tela cobra o número antes de gravar.
+
+    A ordem aqui é a do coalesce: o histórico entra primeiro e o de/para
+    escreve por cima.
+    """
+    catalogo = {}
+
+    # 1) histórico de lançamentos: o que a operação realmente usa
+    grafias, contagem_bp = {}, {}
+    for linha in le_tabela(TABELAS_DB["custos"], f'"FORNECEDOR","{COL_BP}"'):
+        nome = texto_celula(linha.get("FORNECEDOR")).upper()
+        if not nome:
+            continue
+        chave = chave_nome(nome)
+        vistas = grafias.setdefault(chave, {})
+        vistas[nome] = vistas.get(nome, 0) + 1
+        bp = para_float(linha.get(COL_BP), None)
+        # BP zerado é "não informado", não o parceiro de código 0
+        if bp:
+            codigos = contagem_bp.setdefault(chave, {})
+            codigos[int(bp)] = codigos.get(int(bp), 0) + 1
+
+    for chave, vistas in grafias.items():
+        maior = mais_frequente(contagem_bp.get(chave, {}))
+        catalogo[chave] = {
+            "NOME": mais_frequente(vistas),
+            "BP": str(maior) if maior else "",
+            "ORIGEM": ORIGEM_HISTORICO,
+        }
+
+    # 2) de/para por cima: a grafia e o BP dele vencem
+    for linha in le_tabela(TABELA_FORNECEDOR_BP, '"FORNECEDOR","BP"'):
+        nome = texto_celula(linha.get("FORNECEDOR")).upper()
+        if not nome:
+            continue
+        registro = catalogo.setdefault(chave_nome(nome), {})
+        registro["NOME"] = nome
+        registro["BP"] = texto_celula(linha.get("BP")) or registro.get("BP", "")
+        registro["ORIGEM"] = ORIGEM_DEPARA
+
+    return catalogo
+
+
+def nomes_fornecedores() -> list:
+    return sorted(r["NOME"] for r in fornecedores_conhecidos().values())
+
+
+def registro_fornecedor(nome):
+    """O registro daquele fornecedor, mesmo escrito de outro jeito."""
+    chave = chave_nome(nome)
+    return fornecedores_conhecidos().get(chave) if chave else None
+
+
+def bp_do_fornecedor(nome) -> str:
+    registro = registro_fornecedor(nome)
+    return registro.get("BP", "") if registro else ""
+
+
+def esquece_fornecedores() -> None:
+    """Descarta o catálogo em cache.
+
+    Chamar depois de QUALQUER gravação em custos, não só ao cadastrar um
+    fornecedor novo: o histórico é uma das origens, então um lançamento
+    com BP novo também muda o catálogo.
+    """
+    limpar = getattr(fornecedores_conhecidos, "clear", None)
+    if callable(limpar):
+        limpar()
+
+
+def fornecedor_novo() -> bool:
+    return txt("cus_fornecedor") == CONTROLE_OUTRO
+
+
+def fornecedor_escolhido() -> str:
+    """O nome que vai para o banco: o da lista, ou o digitado em OUTRO."""
+    if fornecedor_novo():
+        return txt("cus_fornecedor_novo").upper()
+    return txt("cus_fornecedor")
+
+
+def preenche_bp_do_fornecedor() -> None:
+    """on_change do seletor: traz o BP daquele fornecedor.
+
+    Escrever a key de outro widget só é seguro dentro de um on_change —
+    fora dele o Streamlit ignora o value quando a key já existe.
+
+    Ao escolher OUTRO o campo é ZERADO, e não deixado como estava: o BP
+    do fornecedor anterior ficaria na tela e seria gravado para o novo.
+    """
+    bp = bp_do_fornecedor(txt("cus_fornecedor"))
+    st.session_state["cus_bp"] = float(bp) if bp else 0.0
+
+
+def cadastra_fornecedor(nome: str, bp: float) -> str:
+    """Acrescenta o par na tabela de/para. Devolve o aviso para a tela.
+
+    Roda depois de o custo estar gravado: se falhar aqui, o lançamento
+    continua valendo e a mensagem diz o que não foi cadastrado — melhor
+    que desfazer um custo correto por causa de uma lista de apoio.
+    """
+    try:
+        cliente = conectar_supabase()
+        cliente.table(TABELA_FORNECEDOR_BP).upsert(
+            {"FORNECEDOR": nome, "BP": str(int(bp))}
+        ).execute()
+    except Exception as erro:
+        return (
+            f" O lançamento foi gravado, mas **{nome}** não entrou na lista "
+            f"de fornecedores ({erro}) — cadastre na mão."
+        )
+    esquece_fornecedores()
+    return f" **{nome}** entrou na lista de fornecedores com o BP {int(bp)}."
+
+
 def salvar_custo() -> None:
-    if not txt("cus_fornecedor"):
-        st.session_state["msg_custos"] = ("warning", "Informe o FORNECEDOR.")
+    nome = fornecedor_escolhido()
+    if not nome:
+        st.session_state["msg_custos"] = (
+            "warning",
+            "Digite o nome do fornecedor novo."
+            if fornecedor_novo()
+            else "Escolha o FORNECEDOR.",
+        )
+        return
+
+    # BP obrigatório para quem ainda não tem um. Vale para o fornecedor
+    # novo e também para o que veio do histórico sem BP — nos dois casos o
+    # par nome + BP vai para o de/para, e linha sem BP ali é pior que
+    # nenhuma: apareceria na lista ensinando um código vazio.
+    bp = para_float(st.session_state.get("cus_bp"), 0.0) or 0.0
+    registro = registro_fornecedor(nome)
+    if bp <= 0 and not (registro and registro.get("BP")):
+        st.session_state["msg_custos"] = (
+            "warning",
+            f"**{nome}** ainda não tem {COL_BP} conhecido. Informe o número "
+            "para gravar — ele passa a valer para os próximos lançamentos.",
+        )
         return
     dados = {
-        "FORNECEDOR": txt("cus_fornecedor").upper(),
+        "FORNECEDOR": nome,
         "FILIAL": txt("cus_filial").upper(),
         "NOTA_BOLETO": txt("cus_nota"),
         "PEDIDO": txt("cus_pedido"),
@@ -2579,18 +2754,45 @@ def salvar_custo() -> None:
         "VALOR": st.session_state.get("cus_valor", 0.0),
         "MES": st.session_state.get("cus_mes", MESES[date.today().month - 1]),
         COL_DATA_PAGAMENTO: st.session_state.get("cus_dt_pag", date.today()),
-        COL_BP: st.session_state.get("cus_bp", 0.0),
+        COL_BP: bp,
         "FIXO": st.session_state.get("cus_fixo", OPCOES_FIXO[0]),
         "SETOR": st.session_state.get("cus_setor", OPCOES_SETOR[0]),
         "USUARIO": usuario_email_logado,
     }
-    concluir("msg_custos", "custos", dados, CAMPOS_CUSTO)
+    # O de/para só aprende nome que ele ainda não tem. Se ele já conhece,
+    # um BP corrigido num lançamento NÃO reescreve a referência: erro de
+    # digitação de uma pessoa passaria a valer para todo mundo.
+    cadastrar = not (registro and registro.get("ORIGEM") == ORIGEM_DEPARA)
+
+    def aprende():
+        chave = "msg_custos"
+        tipo, texto = st.session_state.get(chave, ("success", ""))
+        extra = cadastra_fornecedor(nome, bp) if cadastrar else ""
+        st.session_state[chave] = (tipo, texto + extra)
+        # o histórico também é origem do catálogo: qualquer gravação o muda
+        esquece_fornecedores()
+
+    concluir("msg_custos", "custos", dados, CAMPOS_CUSTO, apos_ok=aprende)
 
 
 def form_custos() -> None:
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.text_input("FORNECEDOR", key="cus_fornecedor")
+        st.selectbox(
+            "FORNECEDOR",
+            nomes_fornecedores() + [CONTROLE_OUTRO],
+            index=None,
+            placeholder="Escolha o fornecedor",
+            key="cus_fornecedor",
+            on_change=preenche_bp_do_fornecedor,
+            help="Escolher traz o BP; OUTRO cadastra um fornecedor novo",
+        )
+        if fornecedor_novo():
+            st.text_input(
+                "Qual fornecedor?",
+                key="cus_fornecedor_novo",
+                placeholder="nome do fornecedor novo",
+            )
         st.text_input("PEDIDO", key="cus_pedido")
         st.number_input("VALOR", min_value=0.0, step=0.01, format="%.2f", key="cus_valor")
     with c2:
@@ -2606,8 +2808,22 @@ def form_custos() -> None:
     with c4:
         # coluna float8 no banco; step/format inteiros porque BP é identificador
         st.number_input(
-            COL_BP, min_value=0.0, step=1.0, format="%.0f", key="cus_bp"
+            COL_BP, min_value=0.0, step=1.0, format="%.0f", key="cus_bp",
+            help=(
+                "Obrigatório: é ele que cadastra o fornecedor novo na lista"
+                if fornecedor_novo()
+                else "Vem do fornecedor escolhido; corrija se for outro"
+            ),
         )
+        registro_tela = registro_fornecedor(fornecedor_escolhido())
+        if registro_tela and registro_tela.get("BP"):
+            st.caption(f"BP vindo do **{registro_tela['ORIGEM']}**.")
+        elif fornecedor_escolhido():
+            st.caption(
+                f"**{COL_BP}** é obrigatório: este fornecedor ainda não tem "
+                "um conhecido, e o par nome + BP passa a valer para os "
+                "próximos lançamentos."
+            )
     with c5:
         st.selectbox("FIXO", OPCOES_FIXO, key="cus_fixo")
     with c6:
@@ -2832,7 +3048,7 @@ CAMPOS_EDICAO = {
         campo("OBSERVACAO", "texto_longo", "OBSERVAÇÃO"),
     ],
     "custos": [
-        campo("FORNECEDOR", "texto"),
+        campo("FORNECEDOR", "fornecedor"),
         campo("FILIAL", "filial"),
         campo("NOTA_BOLETO", "texto", "NOTA/BOLETO"),
         campo("PEDIDO", "texto"),
@@ -2998,6 +3214,21 @@ def desenha_campo(spec: dict, registro: dict, prefixo: str):
             )
         # filial gravada fora da lista atual entra na lista, para não ser
         # trocada por outra sem ninguém pedir
+        if atual not in (None, "") and atual not in opcoes:
+            opcoes = [atual] + opcoes
+        indice = opcoes.index(atual) if atual in opcoes else 0
+        return st.selectbox(label, opcoes, index=indice, key=chave)
+    if tipo == "fornecedor":
+        # A lista vem de uma leitura do banco, que não existe no import —
+        # então é resolvida aqui, na hora de desenhar. Mesmo arranjo do
+        # tipo "filial", pelo mesmo motivo.
+        opcoes = nomes_fornecedores()
+        if not opcoes:
+            return st.text_input(
+                label, value="" if atual is None else str(atual), key=chave
+            )
+        # grafia antiga fora da lista entra na lista: editar um custo de
+        # 2024 não pode trocar o fornecedor dele sem ninguém pedir
         if atual not in (None, "") and atual not in opcoes:
             opcoes = [atual] + opcoes
         indice = opcoes.index(atual) if atual in opcoes else 0
