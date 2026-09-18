@@ -6430,7 +6430,18 @@ def grafico_proximos_vencimentos(quadro: pd.DataFrame) -> None:
                 showarrow=False, yshift=10,
                 font=dict(size=11, color="#3C4B42"),
             )
-    fig.update_yaxes(range=[0, float(totais.max()) * 1.25], dtick=1)
+    # Sem linha de grade: o total de cada mês já vai escrito em cima da
+    # barra, então a grade só polui.
+    #
+    # E o dtick=1 era um erro meu: nasceu para contagens pequenas e, com
+    # um mês de 61 licenças, virava uma parede de 61 marcações no eixo.
+    # Passo fixo só quando a escala é curta; acima disso o Plotly escolhe.
+    maior = float(totais.max())
+    fig.update_yaxes(
+        range=[0, maior * 1.25],
+        showgrid=False,
+        dtick=1 if maior <= 12 else None,
+    )
     fig.update_xaxes(type="category", title="")
     st.plotly_chart(estiliza(fig, 360), use_container_width=True)
 
@@ -6584,8 +6595,41 @@ def mapa_filial_licenca(base: pd.DataFrame) -> None:
     fig.update_xaxes(side="top", title="", tickangle=-45, automargin=True)
     fig.update_yaxes(title="", automargin=True)
     fig.update_layout(coloraxis_showscale=False)
+
+    # O % de cada filial sai das LINHAS, não das células: uma filial pode
+    # ter três licenças com o mesmo nome, e a célula guarda só a pior.
+    # Contar célula daria peso igual a quem tem uma e a quem tem três.
+    # É a mesma conta do cartão "Em conformidade", filial a filial.
+    por_filial = quadro[quadro["STATUS_N"] != "NÃO SE APLICA"]
+    for filial in matriz.index:
+        dela = por_filial[por_filial["FILIAL_N"] == filial]
+        if dela.empty:
+            continue
+        taxa = (dela["STATUS_N"] == "NO PRAZO").sum() / len(dela)
+        fig.add_annotation(
+            xref="paper", x=1.015, xanchor="left",
+            y=filial, yref="y",
+            text=f"<b>{taxa:.0%}</b>",
+            showarrow=False,
+            font=dict(
+                size=12,
+                color=CORES_STATUS["NO PRAZO"] if taxa >= 0.9
+                else CORES_STATUS["RENOVAR"],
+            ),
+        )
+    fig.add_annotation(
+        xref="paper", x=1.015, xanchor="left",
+        yref="paper", y=1.0, yanchor="bottom",
+        text="no prazo", showarrow=False,
+        font=dict(size=10, color="#6B7A70"),
+    )
+
     altura = max(320, 36 * len(matriz) + 200)
-    st.plotly_chart(estiliza(fig, altura), use_container_width=True)
+    fig = estiliza(fig, altura)
+    # espaço à direita para a coluna de porcentagem: o automargin do eixo
+    # não reserva lugar para anotação em xref="paper"
+    fig.update_layout(margin_r=80)
+    st.plotly_chart(fig, use_container_width=True)
 
     legenda = " · ".join(
         f"<span style='color:{CORES_STATUS[s]}'>■</span> {s.capitalize()}"
