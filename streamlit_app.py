@@ -6246,6 +6246,130 @@ def com_vencimento(base: pd.DataFrame) -> pd.DataFrame:
     return quadro
 
 
+MESES_CURTOS = ["jan", "fev", "mar", "abr", "mai", "jun",
+                "jul", "ago", "set", "out", "nov", "dez"]
+HORIZONTE_MESES = 12
+TOPO_LEGENDA = 8
+OUTRAS = "outras"
+
+
+def rotulo_mes_ano(ano: int, mes: int) -> str:
+    """set/26 — o formato pedido para o eixo."""
+    return f"{MESES_CURTOS[mes - 1]}/{str(ano)[-2:]}"
+
+
+def proximos_meses(inicio: date, quantos: int = HORIZONTE_MESES) -> list:
+    """Os `quantos` meses a partir do mês de `inicio`, como (ano, mês).
+
+    A lista existe para o eixo ter os 12 meses SEMPRE, mesmo os sem
+    vencimento: mês vazio é informação — é folga na agenda de renovação.
+    """
+    baldes, ano, mes = [], inicio.year, inicio.month
+    for _ in range(quantos):
+        baldes.append((ano, mes))
+        mes += 1
+        if mes > 12:
+            ano, mes = ano + 1, 1
+    return baldes
+
+
+def grafico_proximos_vencimentos(quadro: pd.DataFrame) -> None:
+    """Quantas licenças vencem em cada um dos próximos 12 meses.
+
+    Sai da DATA, então só entra o que tem DT_VENCIMENTO legível — a
+    legenda diz quantas ficaram fora. O que já venceu não aparece aqui:
+    é atraso, não agenda, e tem gráfico próprio embaixo.
+
+    Empilhado pelo NOME da licença, porque o banco não tem coluna de
+    tipo. As mais frequentes ganham cor própria; o resto vira "outras",
+    senão a legenda fica maior que o gráfico.
+    """
+    st.markdown("**O que vence nos próximos 12 meses**")
+
+    hoje = date.today()
+    baldes = proximos_meses(hoje)
+    rotulos = [rotulo_mes_ano(a, m) for a, m in baldes]
+    de_balde = {(a, m): rotulo_mes_ano(a, m) for a, m in baldes}
+
+    aplicaveis = quadro[quadro["STATUS_N"] != "NÃO SE APLICA"]
+    a_vencer = aplicaveis[
+        aplicaveis["VENCIMENTO"].map(lambda d: bool(d) and d >= hoje)
+    ].copy()
+    a_vencer["BALDE"] = a_vencer["VENCIMENTO"].map(
+        lambda d: de_balde.get((d.year, d.month))
+    )
+    # fora do horizonte: vencimento em 2029 não é agenda deste ano
+    adiante = int(a_vencer["BALDE"].isna().sum())
+    a_vencer = a_vencer[a_vencer["BALDE"].notna()]
+
+    sem_data = int(aplicaveis["VENCIMENTO"].isna().sum())
+
+    if a_vencer.empty:
+        st.info(
+            "Nenhuma licença vence nos próximos 12 meses — entre as que "
+            "têm data legível."
+        )
+        if sem_data:
+            st.caption(
+                f"{sem_data} licença(s) com {COL_DT_VENCIMENTO} ilegível "
+                "ficam fora desta agenda."
+            )
+        return
+
+    a_vencer["LICENCA_N"] = a_vencer["LICENCA"].map(
+        lambda v: texto_celula(v) or "(sem nome)"
+    )
+    frequentes = list(
+        a_vencer["LICENCA_N"].value_counts().head(TOPO_LEGENDA).index
+    )
+    a_vencer["LEGENDA"] = a_vencer["LICENCA_N"].map(
+        lambda n: n if n in frequentes else OUTRAS
+    )
+
+    contagem = (
+        a_vencer.groupby(["BALDE", "LEGENDA"]).size().reset_index(name="QTD")
+    )
+    ordem_legenda = frequentes + ([OUTRAS] if OUTRAS in set(
+        a_vencer["LEGENDA"]) else [])
+
+    fig = px.bar(
+        contagem,
+        x="BALDE", y="QTD", color="LEGENDA",
+        category_orders={"BALDE": rotulos, "LEGENDA": ordem_legenda},
+    )
+    fig.update_layout(barmode="stack", legend_title=None)
+    fig.update_traces(
+        hovertemplate="%{x}<br>%{fullData.name}: %{y}<extra></extra>"
+    )
+
+    # o total de cada mês em cima da barra: o empilhado dá a composição,
+    # não a soma, e é a soma que diz onde o mês vai apertar
+    totais = contagem.groupby("BALDE")["QTD"].sum()
+    for rotulo in rotulos:
+        if rotulo in totais.index:
+            fig.add_annotation(
+                x=rotulo, y=int(totais[rotulo]), text=f"<b>{int(totais[rotulo])}</b>",
+                showarrow=False, yshift=10,
+                font=dict(size=11, color="#3C4B42"),
+            )
+    fig.update_yaxes(range=[0, float(totais.max()) * 1.25], dtick=1)
+    fig.update_xaxes(type="category", title="")
+    st.plotly_chart(estiliza(fig, 360), use_container_width=True)
+
+    recado = (
+        f"{int(totais.sum())} licença(s) vencem nos próximos "
+        f"{HORIZONTE_MESES} meses. Mês sem barra é folga na agenda."
+    )
+    if adiante:
+        recado += f" {adiante} vencem depois desse horizonte."
+    if sem_data:
+        recado += (
+            f" **{sem_data} ficam fora**: {COL_DT_VENCIMENTO} ilegível — a "
+            "coluna é texto no banco."
+        )
+    st.caption(recado)
+
+
 def cartoes_conformidade(quadro: pd.DataFrame) -> None:
     """Quatro números: conformidade, vencidas, a vencer e o pior atraso."""
     aplicaveis = quadro[quadro["STATUS_N"] != "NÃO SE APLICA"]
@@ -6429,6 +6553,16 @@ def analise_licencas(df: pd.DataFrame) -> None:
         )
 
     st.divider()
+    grafico_proximos_vencimentos(quadro)
+
+    st.divider()
+    mapa_filial_licenca(base)
+    grafico_atrasos(base)
+
+    # Por último o panorama: é o único com TODAS as filiais, inclusive as
+    # sem pendência. Os de cima respondem "o que fazer"; este, "como
+    # estamos" — e quem abre a tela quer a primeira pergunta.
+    st.divider()
     contagem = (
         base.groupby(["FILIAL_N", "STATUS_N"]).size().reset_index(name="QTD")
     )
@@ -6475,9 +6609,6 @@ def analise_licencas(df: pd.DataFrame) -> None:
         "de cada faixa é a quantidade daquele status; o número à direita é o "
         "total da filial."
     )
-
-    mapa_filial_licenca(base)
-    grafico_atrasos(base)
 
 
 TOPO_ATRASO = 15
