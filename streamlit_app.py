@@ -2410,6 +2410,7 @@ CAMPOS_CUSTO = (
     "cus_fornecedor_novo",
     "cus_filial",
     "cus_nota",
+    "cus_nota_numero",
     "cus_pedido",
     "cus_migo",
     "cus_ng",
@@ -2422,6 +2423,22 @@ CAMPOS_CUSTO = (
 )
 
 OPCOES_SETOR = ["Sustentabilidade", "Qualidade"]
+
+# Boleto não tem número de nota: o documento é o próprio boleto. Nota
+# tem, e é o número que identifica o lançamento na contabilidade. Por
+# isso uma opção fechada e uma aberta, e não duas colunas.
+OPCAO_BOLETO = "BOLETO"
+OPCAO_NOTA = "NOTA — digitar o número"
+OPCOES_NOTA_BOLETO = [OPCAO_BOLETO, OPCAO_NOTA]
+
+
+def nota_digitada() -> bool:
+    return txt("cus_nota") == OPCAO_NOTA
+
+
+def valor_nota_boleto() -> str:
+    """O que vai para NOTA_BOLETO: a palavra BOLETO ou o número da nota."""
+    return txt("cus_nota_numero") if nota_digitada() else txt("cus_nota")
 
 # FIXO era texto livre: a mesma classificação entrava como "fixo", "FIXO",
 # "F" e em branco, e nenhuma delas agrupa com a outra num relatório. A
@@ -2721,6 +2738,16 @@ def salvar_custo() -> None:
         )
         return
 
+    # Escolheu nota e não digitou o número: sem isso a coluna ficaria com
+    # o rótulo da opção ("NOTA — digitar o número"), que não identifica
+    # lançamento nenhum, ou vazia — e aí não se sabe se é boleto sem nota
+    # ou nota sem número.
+    if nota_digitada() and not txt("cus_nota_numero"):
+        st.session_state["msg_custos"] = (
+            "warning", "Informe o número da nota."
+        )
+        return
+
     # BP obrigatório para quem ainda não tem um. Vale para o fornecedor
     # novo e também para o que veio do histórico sem BP — nos dois casos o
     # par nome + BP vai para o de/para, e linha sem BP ali é pior que
@@ -2737,7 +2764,7 @@ def salvar_custo() -> None:
     dados = {
         "FORNECEDOR": nome,
         "FILIAL": txt("cus_filial").upper(),
-        "NOTA_BOLETO": txt("cus_nota"),
+        "NOTA_BOLETO": valor_nota_boleto(),
         "PEDIDO": txt("cus_pedido"),
         "MIGO": txt("cus_migo"),
         "NG": txt("cus_ng"),
@@ -2790,7 +2817,19 @@ def form_custos() -> None:
         st.text_input("MIGO", key="cus_migo")
         st.selectbox("MÊS", MESES, index=date.today().month - 1, key="cus_mes")
     with c3:
-        st.text_input("NOTA/BOLETO", key="cus_nota")
+        st.selectbox(
+            "NOTA/BOLETO",
+            OPCOES_NOTA_BOLETO,
+            index=None,
+            placeholder="Boleto ou nota?",
+            key="cus_nota",
+        )
+        if nota_digitada():
+            st.text_input(
+                "Número da nota",
+                key="cus_nota_numero",
+                placeholder="ex.: NF-8842",
+            )
         st.text_input("NG", key="cus_ng")
         st.date_input("DATA PAGAMENTO", value=date.today(), format="DD/MM/YYYY", key="cus_dt_pag")
 
