@@ -2987,31 +2987,43 @@ def recalcular_total_reciclavel(registro: dict, mudancas: dict) -> dict:
 # Campos de cada tabela (usados só na aba de edição)
 # ------------------------------------------------
 CAMPOS_EDICAO = {
+    # A ordem aqui é a ordem na tela, e o `grupo` é o título do bloco:
+    # os mesmos quatro do formulário, na mesma sequência.
     "consumos": [
-        campo("FILIAL", "filial"),
-        campo("ANO", "inteiro", minimo=1990, maximo=2100),
-        campo("MES", "mes", "MÊS"),
-        campo(COL_SOLIDOS, "decimal", "SÓLIDOS CONTAMINADOS (kg)"),
-        campo(COL_OLEO, "decimal", "ÓLEO LUBRIFICANTE (L)"),
-        campo("AGUA", "decimal", "ÁGUA (m³)"),
-        campo(COL_AGUA_VALOR, "decimal", "ÁGUA (R$)"),
-        campo(COL_ESGOTO, "decimal", "ESGOTO (m³)"),
-        campo(COL_ESGOTO_VALOR, "decimal", "ESGOTO (R$)"),
-        campo("ENERGIA", "decimal", "ENERGIA (kWh)"),
-        campo(COL_ENERGIA_VALOR, "decimal", "ENERGIA (R$)"),
-        campo("COMUM", "decimal", "COMUM (kg)"),
-        campo("MADEIRA", "decimal", "MADEIRA (kg)"),
-        campo("RECICLAVEIS", "decimal", "RECICLÁVEIS (kg)"),
-        campo("CO2", "decimal", "CO² (t)"),
+        campo("FILIAL", "filial", grupo="Competência"),
+        campo("ANO", "inteiro", minimo=1990, maximo=2100, grupo="Competência"),
+        campo("MES", "mes", "MÊS", grupo="Competência"),
+
         campo(COL_AGUA_FATURAMENTO, "opcoes", "ÁGUA — FATURAMENTO",
-              opcoes=OPCOES_AGUA_EDICAO),
+              opcoes=OPCOES_AGUA_EDICAO, grupo="Água e esgoto"),
+        campo("AGUA", "decimal", "ÁGUA (m³)", grupo="Água e esgoto"),
+        campo(COL_AGUA_VALOR, "decimal", "ÁGUA (R$)", grupo="Água e esgoto"),
+        campo(COL_ESGOTO, "decimal", "ESGOTO (m³)", grupo="Água e esgoto"),
+        campo(COL_ESGOTO_VALOR, "decimal", "ESGOTO (R$)",
+              grupo="Água e esgoto"),
+
+        campo("ENERGIA", "decimal", "ENERGIA (kWh)", grupo="Energia"),
+        campo(COL_ENERGIA_VALOR, "decimal", "ENERGIA (R$)", grupo="Energia"),
         campo(COL_BANDEIRA, "opcoes", "BANDEIRA TARIFÁRIA",
-              opcoes=OPCOES_BANDEIRA),
-        campo(COL_REATIVO_KVAR, "decimal", "REATIVO (kVAr)"),
-        campo(COL_REATIVO_VALOR, "decimal", "REATIVO (R$)"),
-        campo(COL_GERADA, "decimal", "ENERGIA GERADA (kWh)"),
-        campo(COL_INJETADA, "decimal", "ENERGIA INJETADA (kWh)"),
-        campo(COL_CREDITO, "decimal", "CRÉDITO ACUMULADO (kWh)"),
+              opcoes=OPCOES_BANDEIRA, grupo="Energia"),
+        campo(COL_REATIVO_KVAR, "decimal", "REATIVO (kVAr)", grupo="Energia"),
+        campo(COL_REATIVO_VALOR, "decimal", "REATIVO (R$)", grupo="Energia"),
+        campo(COL_GERADA, "decimal", "ENERGIA GERADA (kWh)",
+              grupo="Energia — geração solar"),
+        campo(COL_INJETADA, "decimal", "ENERGIA INJETADA (kWh)",
+              grupo="Energia — geração solar"),
+        campo(COL_CREDITO, "decimal", "CRÉDITO ACUMULADO (kWh)",
+              grupo="Energia — geração solar"),
+
+        campo(COL_SOLIDOS, "decimal", "SÓLIDOS CONTAMINADOS (kg)",
+              grupo="Resíduos e demais"),
+        campo(COL_OLEO, "decimal", "ÓLEO LUBRIFICANTE (L)",
+              grupo="Resíduos e demais"),
+        campo("COMUM", "decimal", "COMUM (kg)", grupo="Resíduos e demais"),
+        campo("MADEIRA", "decimal", "MADEIRA (kg)", grupo="Resíduos e demais"),
+        campo("RECICLAVEIS", "decimal", "RECICLÁVEIS (kg)",
+              grupo="Resíduos e demais"),
+        campo("CO2", "decimal", "CO² (t)", grupo="Resíduos e demais"),
     ],
     "licencas": [
         campo("FILIAL", "filial"),
@@ -3038,20 +3050,25 @@ CAMPOS_EDICAO = {
         campo("OBSERVACAO", "texto_longo", "OBSERVAÇÃO"),
     ],
     "custos": [
-        campo("FORNECEDOR", "fornecedor"),
-        campo("FILIAL", "filial"),
-        campo("NOTA_BOLETO", "texto", "NOTA/BOLETO"),
-        campo("PEDIDO", "texto"),
-        campo("MIGO", "texto"),
-        campo("NG", "texto"),
-        campo("VALOR", "decimal"),
-        campo("MES", "mes_nome", "MÊS"),   # coluna text: guarda o nome
-        campo(COL_DATA_PAGAMENTO, "data", "DATA PAGAMENTO"),
-        campo(COL_BP, "decimal"),
+        campo("FILIAL", "filial", grupo="Competência"),
+        campo("MES", "mes_nome", "MÊS", grupo="Competência"),
+        campo(COL_DATA_PAGAMENTO, "data", "DATA PAGAMENTO",
+              grupo="Competência"),
+
+        campo("FORNECEDOR", "fornecedor", grupo="Fornecedor e valor"),
+        campo(COL_BP, "decimal", grupo="Fornecedor e valor"),
+        campo("VALOR", "decimal", grupo="Fornecedor e valor"),
+        campo("SETOR", "opcoes", opcoes=OPCOES_SETOR,
+              grupo="Fornecedor e valor"),
         # "opcoes" preserva o que já está no banco: registro antigo com
         # outra grafia aparece como está, em vez de ser reescrito sem pedir
-        campo("FIXO", "opcoes", opcoes=OPCOES_FIXO),
-        campo("SETOR", "opcoes", opcoes=OPCOES_SETOR),
+        campo("FIXO", "opcoes", opcoes=OPCOES_FIXO,
+              grupo="Fornecedor e valor"),
+
+        campo("NOTA_BOLETO", "texto", "NOTA/BOLETO", grupo="Documentos"),
+        campo("PEDIDO", "texto", grupo="Documentos"),
+        campo("MIGO", "texto", grupo="Documentos"),
+        campo("NG", "texto", grupo="Documentos"),
     ],
     "reciclaveis": [
         campo("FILIAL", "filial"),
@@ -3463,11 +3480,23 @@ def painel_edicao(tabela_app: str, limite: int = LIMITE_REGISTROS) -> None:
     curtos = [c for c in especificacao if c["tipo"] != "texto_longo"]
     longos = [c for c in especificacao if c["tipo"] == "texto_longo"]
 
+    # Em blocos, na mesma ordem e com os mesmos títulos do formulário:
+    # 22 campos numa grade corrida de três colunas obrigam a ler todos
+    # para achar um. Tela que não declara `grupo` cai num bloco só sem
+    # título, que é exatamente o comportamento anterior.
     valores = {}
-    colunas = st.columns(3)
-    for i, spec in enumerate(curtos):
-        with colunas[i % 3]:
-            valores[spec["col"]] = desenha_campo(spec, registro, prefixo)
+    grupos = {}
+    for spec in curtos:
+        grupos.setdefault(spec.get("grupo", ""), []).append(spec)
+
+    for titulo, especificacoes in grupos.items():
+        if titulo:
+            st.markdown(f"**{titulo}**")
+        colunas = st.columns(3)
+        for i, spec in enumerate(especificacoes):
+            with colunas[i % 3]:
+                valores[spec["col"]] = desenha_campo(spec, registro, prefixo)
+
     for spec in longos:
         valores[spec["col"]] = desenha_campo(spec, registro, prefixo)
 
@@ -3827,21 +3856,26 @@ FREQUENCIAS_PGRS = ["Sob Demanda", "1x semana", "2x semana", "3x semana",
 # editar. Fica aqui embaixo, e não junto das outras, porque depende de
 # FREQUENCIAS_PGRS, definida logo acima.
 CAMPOS_EDICAO["pgrs"] = [
-    campo("FILIAL", "filial"),
-    campo("ANO", "inteiro", minimo=1990, maximo=2100),
-    campo("RESIDUO", "texto", "RESÍDUO"),
-    campo(COL_IBAMA, "texto", "CÓDIGO IBAMA"),
-    campo("CLASSE", "texto"),
-    campo(COL_UNIDADE, "texto", "UNIDADE"),
-    campo(COL_LOCAL, "texto", "LOCAL GERADO"),
-    campo("ACONDICIONAMENTO", "texto"),
-    campo(COL_TRANSPORTE, "texto", "TRANSPORTE INTERNO"),
-    campo("RESPONSAVEL", "texto", "RESPONSÁVEL"),
-    campo("ARMAZENAMENTO", "texto"),
-    campo("COLETA", "texto"),
-    campo("DESTINACAO", "texto", "DESTINAÇÃO"),
-    campo("FREQUENCIA", "opcoes", "FREQUÊNCIA", opcoes=FREQUENCIAS_PGRS),
-    campo(COL_SITUACAO, "opcoes", "SITUAÇÃO", opcoes=OPCOES_SITUACAO),
+    campo("FILIAL", "filial", grupo="Identificação"),
+    campo("ANO", "inteiro", minimo=1990, maximo=2100, grupo="Identificação"),
+    campo("RESIDUO", "texto", "RESÍDUO", grupo="Identificação"),
+    campo(COL_SITUACAO, "opcoes", "SITUAÇÃO", opcoes=OPCOES_SITUACAO,
+          grupo="Identificação"),
+
+    campo(COL_IBAMA, "texto", "CÓDIGO IBAMA", grupo="Classificação"),
+    campo("CLASSE", "texto", grupo="Classificação"),
+    campo(COL_UNIDADE, "texto", "UNIDADE", grupo="Classificação"),
+
+    campo(COL_LOCAL, "texto", "LOCAL GERADO", grupo="Manejo"),
+    campo("ACONDICIONAMENTO", "texto", grupo="Manejo"),
+    campo(COL_TRANSPORTE, "texto", "TRANSPORTE INTERNO", grupo="Manejo"),
+    campo("ARMAZENAMENTO", "texto", grupo="Manejo"),
+    campo("RESPONSAVEL", "texto", "RESPONSÁVEL", grupo="Manejo"),
+
+    campo("COLETA", "texto", grupo="Coleta e destinação"),
+    campo("DESTINACAO", "texto", "DESTINAÇÃO", grupo="Coleta e destinação"),
+    campo("FREQUENCIA", "opcoes", "FREQUÊNCIA", opcoes=FREQUENCIAS_PGRS,
+          grupo="Coleta e destinação"),
 ]
 
 RESUMO_REGISTRO["pgrs"] = ("FILIAL", "ANO", "RESIDUO")
