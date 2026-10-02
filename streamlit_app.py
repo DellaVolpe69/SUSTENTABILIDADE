@@ -316,6 +316,15 @@ COL_SOLIDOS = "SOLIDOS_CONTAMINADOS"
 COL_OLEO = "OLEO_LUBRIFICANTE"
 COL_DT_VENCIMENTO = "DT_VENCIMENTO"
 COL_DIAS = "DIAS"  # dias pré-vencimento
+# Na tabela, "DIAS" sozinho não diz nada — e fica ao lado de outra coluna
+# de dias. Estes dois rótulos são só de TELA: a coluna do banco continua
+# sendo DIAS, e é com esse nome que o app grava.
+#
+# ANTECEDÊNCIA é a REGRA (com quantos dias antes o status vira RENOVAR) e
+# vem do cadastro; VENCE EM é o FATO (quantos dias faltam), calculado na
+# hora contra a data de hoje.
+ROTULO_DIAS = "ANTECEDÊNCIA (DIAS)"
+COL_VENCE_EM = "VENCE EM (DIAS)"
 COL_DATA_PAGAMENTO = "DATA_PAGAMENTO"
 # Plural, com espaço no nome e não underscore. O app leu "BP FORNECEDOR"
 # por um tempo: na gravação isso estoura citando a coluna, mas na LEITURA o
@@ -3500,7 +3509,8 @@ def painel_edicao(tabela_app: str, limite: int = LIMITE_REGISTROS) -> None:
         st.caption(f"{len(df)} registro(s) carregado(s) no total.")
         return
 
-    st.dataframe(filtrado, hide_index=True, height=240)
+    st.dataframe(com_colunas_de_tela(tabela_app, filtrado),
+                 hide_index=True, height=240)
     if len(filtrado) == len(df):
         st.caption(f"{len(df)} registro(s) carregado(s).")
     else:
@@ -5143,6 +5153,40 @@ COLUNAS_FIM = ("DATA_CRIACAO", "USUARIO")
 
 # "id" é chave técnica do banco, não informação de relatório
 COLUNAS_FORA = ("id",)
+
+
+def com_colunas_de_tela(pagina: str, df: pd.DataFrame) -> pd.DataFrame:
+    """Acrescenta VENCE EM e renomeia DIAS. Só para EXIBIR.
+
+    Não entra no que é gravado nem no que é extraído, de propósito:
+
+    - gravar: o painel de edição monta os registros a partir do mesmo
+      DataFrame. Uma coluna a mais aqui viraria uma coluna inexistente no
+      update, e o Supabase recusaria o insert inteiro.
+    - extrair: VENCE EM é relativo a HOJE. Num arquivo baixado hoje e
+      aberto em dezembro, ele estaria mentindo — e o arquivo não tem como
+      avisar. A planilha leva a data de vencimento, que não envelhece.
+    """
+    if pagina not in CATEGORIA_DA_TELA or COL_DT_VENCIMENTO not in df.columns:
+        return df
+
+    hoje = date.today()
+    saida = df.copy()
+    saida[COL_VENCE_EM] = [
+        (lambda d: (d - hoje).days if d else None)(para_data(v))
+        for v in saida[COL_DT_VENCIMENTO]
+    ]
+
+    # VENCE EM logo depois da data que o origina — lado a lado é como se lê
+    ordem = list(saida.columns)
+    ordem.remove(COL_VENCE_EM)
+    posicao = ordem.index(COL_DT_VENCIMENTO) + 1
+    ordem.insert(posicao, COL_VENCE_EM)
+    saida = saida[ordem]
+
+    if COL_DIAS in saida.columns:
+        saida = saida.rename(columns={COL_DIAS: ROTULO_DIAS})
+    return saida
 
 
 def colunas_relatorio(pagina: str, df: pd.DataFrame) -> pd.DataFrame:
@@ -7312,11 +7356,20 @@ def pagina_relatorio(pagina: str) -> None:
 def bloco_relatorio(pagina: str, filtrado: pd.DataFrame, df: pd.DataFrame) -> None:
     """Tabela + extração. Recebe já filtrado para o arquivo sair igual à tela."""
     nome = PAGINAS_INDICADOR[pagina]   # vira o nome da aba no xlsx
-    st.dataframe(filtrado, hide_index=True, height=380)
-    if len(filtrado) == len(df):
-        st.caption(f"{len(df)} registro(s).")
-    else:
-        st.caption(f"{len(filtrado)} de {len(df)} registro(s) — filtro aplicado.")
+    st.dataframe(com_colunas_de_tela(pagina, filtrado),
+                 hide_index=True, height=380)
+    recado = (
+        f"{len(df)} registro(s)."
+        if len(filtrado) == len(df)
+        else f"{len(filtrado)} de {len(df)} registro(s) — filtro aplicado."
+    )
+    if pagina in CATEGORIA_DA_TELA:
+        recado += (
+            f" **{COL_VENCE_EM}** é contado contra hoje: negativo quer dizer "
+            f"que já venceu. **{ROTULO_DIAS}** é a regra do cadastro — com "
+            "quantos dias de antecedência o status vira RENOVAR."
+        )
+    st.caption(recado)
 
     # ---- extração ----
     # as duas páginas de licenças leem a mesma tabela: sem o sufixo da
