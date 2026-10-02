@@ -3395,8 +3395,10 @@ def rotulo_registro(tabela_app: str, linha: dict) -> str:
 
 FILTROS_EDICAO = {
     "consumos": ("FILIAL", "ANO"),
-    "licencas": ("FILIAL", "LICENCA"),
-    "ambiental": ("FILIAL", "LICENCA"),
+    # STATUS junto: "o que está vencido nesta filial" era varrer a tabela
+    # à mão, e é a pergunta mais frequente nestas duas telas
+    "licencas": ("FILIAL", "LICENCA", "STATUS"),
+    "ambiental": ("FILIAL", "LICENCA", "STATUS"),
     "custos": ("FILIAL", "FORNECEDOR"),
     "reciclaveis": ("FILIAL", "MATERIAL"),
     "pgrs": ("FILIAL", "RESIDUO"),
@@ -5925,6 +5927,104 @@ def com_derivadas(quadro, kg: list, rs: list, rotulo_kg: str, rotulo_rs: str,
     return quadro
 
 
+# Uma escala sequencial por serviço, revezando. Serviços diferentes na
+# mesma tela com a mesma cor dariam a impressão de que os números se
+# comparam — e kg não se compara com m³.
+ESCALAS_TABELA = ["Blues", "YlOrBr", "Greens", "Purples", "Oranges",
+                  "PuBuGn", "YlGn", "RdPu"]
+
+
+def tabela_filial_mes(base: pd.DataFrame, colunas: list, rotulo: str,
+                      unidade: str, ano: int, escala: str) -> None:
+    """Consumo de UM serviço, filial por filial, mês a mês.
+
+    Uma tabela por serviço, nunca somando serviços: a cor diz intensidade
+    dentro da tabela, e duas unidades na mesma escala pintariam 400 m³ e
+    400 kg do mesmo tom como se fossem a mesma coisa.
+
+    As filiais vêm da maior para a menor consumidora — é a ordem em que
+    se procura quem puxou o total para cima.
+    """
+    def formata(valor):
+        return fmt_brl(valor) if unidade == "R$" else fmt_unidade(valor, unidade)
+
+    do_ano = base[base["ANO_N"] == ano].copy()
+    if do_ano.empty:
+        st.caption(f"Sem lançamento de {rotulo} em {ano}.")
+        return
+    do_ano["VALOR_T"] = do_ano[colunas].sum(axis=1)
+    if not do_ano["VALOR_T"].any():
+        st.caption(f"Sem lançamento de {rotulo} em {ano}.")
+        return
+
+    do_ano["FILIAL_N"] = do_ano["FILIAL"].map(
+        lambda v: texto_celula(v) or "(sem filial)"
+    )
+    matriz = do_ano.pivot_table(
+        index="FILIAL_N", columns="MES_N", values="VALOR_T", aggfunc="sum"
+    )
+    # até o último mês com lançamento: as colunas vazias à direita só
+    # ocupariam largura, e a ausência já se vê na célula em branco
+    ultimo = int(max(matriz.columns))
+    matriz = matriz.reindex(columns=range(1, ultimo + 1))
+    matriz.columns = [MESES_CURTOS[m - 1].capitalize() for m in matriz.columns]
+    matriz = matriz.loc[matriz.sum(axis=1).sort_values(ascending=False).index]
+
+    # ---- o cartão: total do ano e a comparação com o anterior ----
+    total = float(do_ano["VALOR_T"].sum())
+    meses = sorted({int(m) for m in do_ano["MES_N"]})
+    passado = base[(base["ANO_N"] == ano - 1) & (base["MES_N"].isin(meses))]
+    total_anterior = (
+        float(passado[colunas].sum(axis=1).sum()) if not passado.empty else 0.0
+    )
+
+    esq, dir_ = st.columns([3, 1])
+    with esq:
+        st.markdown(f"#### {rotulo}")
+        st.caption(f"todas as filiais · mês a mês · {ano}")
+    with dir_:
+        if total_anterior:
+            delta = (total - total_anterior) / total_anterior
+            subiu = delta >= 0
+            nota = (
+                f"{'▲' if subiu else '▼'} {abs(delta):.0%} vs. {ano - 1} "
+                f"(mesmos meses)"
+            )
+            # consumir mais é resultado ruim: a seta inverte a cor
+            cor = "laranja" if subiu else "verde"
+        else:
+            nota = f"sem {ano - 1} para comparar"
+            cor = "neutro"
+        st.markdown(
+            cartao_kpi(rotulo, formata(total), cor, nota),
+            unsafe_allow_html=True,
+        )
+
+    if not TEM_PLOTLY:
+        st.dataframe(matriz, use_container_width=True)
+        return
+
+    fig = px.imshow(matriz, color_continuous_scale=escala, aspect="auto")
+    fig.update_traces(
+        texttemplate="%{z:,.0f}",
+        textfont_size=10,
+        # a grade separa as células: sem ela, vizinhas do mesmo tom viram
+        # um bloco só, como aconteceu no mapa de licenças
+        xgap=2,
+        ygap=2,
+        hovertemplate="%{y}<br>%{x}: %{z:,.2f} " + unidade + "<extra></extra>",
+    )
+    fig.update_xaxes(side="top", title="", automargin=True)
+    fig.update_yaxes(title="", automargin=True)
+    fig.update_layout(coloraxis_showscale=False)
+    altura = max(240, 30 * len(matriz) + 120)
+    st.plotly_chart(estiliza(fig, altura), use_container_width=True)
+    st.caption(
+        f"escala de cor: mais claro = menor consumo · mais escuro = maior "
+        f"consumo ({unidade}). Célula em branco é mês sem lançamento."
+    )
+
+
 def analise_consumos(df: pd.DataFrame) -> None:
     base = com_competencia("consumos", df)
     if base.empty:
@@ -6189,6 +6289,35 @@ def analise_consumos(df: pd.DataFrame) -> None:
         )
     st.caption(recado)
 
+    # ---------- consumo por filial, mês a mês ----------
+    # Aqui o filtro é MÚLTIPLO, ao contrário do seletor lá de cima: cada
+    # serviço ganha a sua tabela, com a sua unidade e a sua escala de cor.
+    # Escolher vários não soma nada — o que a tela faz é repetir o bloco,
+    # que é o único jeito de ver dois serviços juntos sem misturá-los.
+    st.divider()
+    st.markdown("### Consumo por filial, mês a mês")
+    anos_tabela = sorted({int(a) for a in base["ANO_N"]}, reverse=True)
+    sel, ano_col, _resto = st.columns([3, 1, 1])
+    with sel:
+        servicos_tabela = st.multiselect(
+            "Serviços",
+            list(catalogo),
+            default=[escolha],
+            key="ind_consumo_servicos_tabela",
+            help="Um bloco por serviço — eles não são somados entre si",
+        )
+    with ano_col:
+        ano_tabela = st.selectbox("Ano", anos_tabela, key="ind_consumo_ano_tabela")
+
+    if not servicos_tabela:
+        st.caption("Escolha ao menos um serviço para ver as tabelas.")
+    for posicao, nome_servico in enumerate(servicos_tabela):
+        colunas_servico, unidade_servico, _titulo = catalogo[nome_servico]
+        tabela_filial_mes(
+            base, colunas_servico, nome_servico, unidade_servico, ano_tabela,
+            ESCALAS_TABELA[posicao % len(ESCALAS_TABELA)],
+        )
+
     if not TEM_PLOTLY:
         aviso_sem_plotly()
         return
@@ -6327,8 +6456,36 @@ def com_vencimento(base: pd.DataFrame) -> pd.DataFrame:
 MESES_CURTOS = ["jan", "fev", "mar", "abr", "mai", "jun",
                 "jul", "ago", "set", "out", "nov", "dez"]
 HORIZONTE_MESES = 12
-TOPO_LEGENDA = 8
 OUTRAS = "outras"
+
+# Estas duas dominavam o gráfico e não são licença de operação: uma é
+# relatório anual de lei, a outra é taxa. Juntá-las em "outras" é o que
+# deixa aparecer o que de fato exige renovação. A comparação é por
+# começo do nome normalizado, porque o sufixo varia
+# ("RELATORIOS- RAAP", "IBAMA – PORTE MED").
+LICENCAS_AGRUPADAS = ("LEI 10165", "TAXA TCFA")
+
+# Cinza para "outras": é o mesmo tom de "não se aplica" no mapa, e
+# sinaliza que aquilo é um saco de coisas, não uma categoria.
+COR_OUTRAS = "#9AA8A0"
+
+
+def agrupa_em_outras(nome: str) -> bool:
+    chave = chave_nome(nome)
+    return any(chave.startswith(p) for p in LICENCAS_AGRUPADAS)
+
+
+def cores_das_licencas(nomes: list) -> dict:
+    """Uma cor por licença, com as da marca na frente.
+
+    CORES_DV tem 8 tons; com mais licenças que isso o Plotly repetiria
+    cor, e duas fatias iguais na mesma barra não se distinguem. Daí a
+    paleta longa atrás.
+    """
+    paleta = list(CORES_DV) + list(px.colors.qualitative.Dark24)
+    cores = {nome: paleta[i % len(paleta)] for i, nome in enumerate(nomes)}
+    cores[OUTRAS] = COR_OUTRAS
+    return cores
 
 
 def rotulo_mes_ano(ano: int, mes: int) -> str:
@@ -6397,23 +6554,26 @@ def grafico_proximos_vencimentos(quadro: pd.DataFrame) -> None:
     a_vencer["LICENCA_N"] = a_vencer["LICENCA"].map(
         lambda v: texto_celula(v) or "(sem nome)"
     )
-    frequentes = list(
-        a_vencer["LICENCA_N"].value_counts().head(TOPO_LEGENDA).index
-    )
+    # Sem teto de legenda: cada licença tem a sua cor. O que vai para
+    # "outras" é só o que está em LICENCAS_AGRUPADAS — decisão de
+    # conteúdo, não de espaço.
     a_vencer["LEGENDA"] = a_vencer["LICENCA_N"].map(
-        lambda n: n if n in frequentes else OUTRAS
+        lambda n: OUTRAS if agrupa_em_outras(n) else n
     )
 
     contagem = (
         a_vencer.groupby(["BALDE", "LEGENDA"]).size().reset_index(name="QTD")
     )
-    ordem_legenda = frequentes + ([OUTRAS] if OUTRAS in set(
-        a_vencer["LEGENDA"]) else [])
+    # as mais numerosas primeiro, e "outras" sempre no fim
+    frequencia = a_vencer["LEGENDA"].value_counts()
+    proprias = [n for n in frequencia.index if n != OUTRAS]
+    ordem_legenda = proprias + ([OUTRAS] if OUTRAS in frequencia.index else [])
 
     fig = px.bar(
         contagem,
         x="BALDE", y="QTD", color="LEGENDA",
         category_orders={"BALDE": rotulos, "LEGENDA": ordem_legenda},
+        color_discrete_map=cores_das_licencas(proprias),
     )
     fig.update_layout(barmode="stack", legend_title=None)
     fig.update_traces(
@@ -6445,10 +6605,17 @@ def grafico_proximos_vencimentos(quadro: pd.DataFrame) -> None:
     fig.update_xaxes(type="category", title="")
     st.plotly_chart(estiliza(fig, 360), use_container_width=True)
 
+    agrupadas = int((a_vencer["LEGENDA"] == OUTRAS).sum())
     recado = (
         f"{int(totais.sum())} licença(s) vencem nos próximos "
-        f"{HORIZONTE_MESES} meses. Mês sem barra é folga na agenda."
+        f"{HORIZONTE_MESES} meses, em {len(proprias)} licença(s) "
+        "diferentes. Mês sem barra é folga na agenda."
     )
+    if agrupadas:
+        recado += (
+            f" **{OUTRAS}** reúne {agrupadas} de Lei 10165 e Taxa TCFA — "
+            "relatório e taxa, não licença de operação."
+        )
     if adiante:
         recado += f" {adiante} vencem depois desse horizonte."
     if sem_data:
